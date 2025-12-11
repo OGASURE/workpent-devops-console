@@ -1,0 +1,2148 @@
+from fastapi import (
+    FastAPI,
+    Form,
+    Request,
+    BackgroundTasks,
+    UploadFile,
+    File,
+)
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+
+import subprocess
+import shutil
+import tempfile
+import os
+import time
+import sqlite3
+
+from pathlib import Path
+from typing import List, Dict, Optional
+from datetime import datetime
+
+app = FastAPI(title="Workpent HyperDev Console")
+
+# ---------------------------------------------------------------------------
+# CONFIG
+# ---------------------------------------------------------------------------
+APPS_BASE_DIR = Path("/srv/workpent/apps")
+SNAPSHOT_BASE_DIR = Path("/srv/workpent/snapshots")
+CREATE_CMD = "/usr/local/bin/workpent-create"
+
+# NOTE (boundaries):
+# - We only talk to systemd via `systemctl` (start/stop/restart).
+# - We DO NOT create/edit systemd units, nginx configs, or deploy scripts.
+# - Clone / update / env / deps / DB logic stays inside /srv/workpent/apps/*.
+# ---------------------------------------------------------------------------
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---------------------------------------------------------------------------
+# HELPER FUNCTIONS
+# ---------------------------------------------------------------------------
+
+def read_env_file(env_path: Path) -> Dict[str, str]:
+    """Parse a simple KEY=VALUE .env file into a dict."""
+    data: Dict[str, str] = {}
+    if env_path.is_file():
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            data[k.strip()] = v.strip()
+    return data
+
+
+def write_env_file(env_path: Path, data: Dict[str, str]) -> None:
+    """Write a dict back to .env in KEY=VALUE form, sorted by key."""
+    lines = []
+    for k in sorted(data.keys()):
+        v = data[k]
+        lines.append(f"{k}={v}")
+    env_path.write_text("\n".join(lines) + "\n")
+
+
+def find_venv(app_dir: Path) -> Optional[Path]:
+    """
+    Try to locate a venv for an app.
+    We support:
+      - /srv/workpent/apps/<app>/.venv
+      - /srv/workpent/apps/<app>/backend/.venv
+    """
+    candidates = [
+        app_dir / ".venv",
+        app_dir / "backend" / ".venv",
+    ]
+    for c in candidates:
+        if c.is_dir():
+            return c
+    return None
+
+
+def get_venv_paths(app_dir: Path) -> Dict[str, Optional[Path]]:
+    """Return dict with venv dir, pip path, python path if found."""
+    venv_dir = find_venv(app_dir)
+    if not venv_dir:
+        return {"venv_dir": None, "pip": None, "python": None}
+
+    bin_dir = venv_dir / "bin"
+    pip = bin_dir / "pip"
+    python = bin_dir / "python"
+    return {
+        "venv_dir": venv_dir,
+        "pip": pip if pip.is_file() else None,
+        "python": python if python.is_file() else None,
+    }
+
+
+def run_pip_command(app_name: str, args: List[str]) -> Dict[str, str]:
+    """
+    Run pip command inside the app's venv.
+    Returns {"ok": bool, "output": "..."} as strings.
+    """
+    app_dir = APPS_BASE_DIR / app_name
+    paths = get_venv_paths(app_dir)
+    pip_path = paths["pip"]
+    if not pip_path:
+        return {"ok": "false", "output": "No venv / pip found for this app."}
+
+    try:
+        proc = subprocess.run(
+            [str(pip_path)] + args,
+            capture_output=True,
+            text=True,
+        )
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        return {
+            "ok": "true" if proc.returncode == 0 else "false",
+            "output": out.strip(),
+        }
+    except Exception as e:
+        return {"ok": "false", "output": f"Error running pip: {e}"}
+
+
+def detect_db_from_env(env: Dict[str, str]) -> Dict[str, str]:
+    """
+    Very light DB detection from DATABASE_URL.
+    Supports:
+      - sqlite:///path/to/db.sqlite3
+      - postgres://... (just identifies type)
+      - mysql://...    (just identifies type)
+    """
+    url = env.get("DATABASE_URL") or env.get("DB_URL") or ""
+    url = url.strip()
+    if not url:
+        return {"type": "none", "url": "", "info": "No DATABASE_URL in .env"}
+
+    lower = url.lower()
+    if lower.startswith("sqlite:///"):
+        return {
+            "type": "sqlite",
+            "url": url,
+            "info": "SQLite database",
+        }
+    if lower.startswith("postgres://") or lower.startswith("postgresql://"):
+        return {
+            "type": "postgres",
+            "url": url,
+            "info": "PostgreSQL database (stats require client driver)",
+        }
+    if lower.startswith("mysql://") or lower.startswith("mysql+pymysql://"):
+        return {
+            "type": "mysql",
+            "url": url,
+            "info": "MySQL database (stats require client driver)",
+        }
+
+    return {
+        "type": "unknown",
+        "url": url,
+        "info": "DATABASE_URL present but type not recognized.",
+    }
+
+
+def sqlite_db_stats(sqlite_url: str) -> Dict:
+    """
+    Given sqlite:///path/to/db.sqlite3, return basic stats:
+      - db_path
+      - tables: list of {name, row_count}
+    """
+    if not sqlite_url.lower().startswith("sqlite:///"):
+        return {"error": "Not a sqlite URL."}
+
+    path_str = sqlite_url[len("sqlite:///") :]
+    db_path = Path(path_str)
+    if not db_path.is_file():
+        return {"error": f"SQLite file not found: {db_path}"}
+
+    result = {"db_path": str(db_path), "tables": []}
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
+        )
+        tables = [row[0] for row in cur.fetchall()]
+        for t in tables:
+            try:
+                cur.execute(f"SELECT COUNT(*) FROM {t}")
+                count = cur.fetchone()[0]
+            except Exception:
+                count = "?"
+            result["tables"].append({"name": t, "rows": count})
+    except Exception as e:
+        result["error"] = f"Error reading sqlite DB: {e}"
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return result
+
+
+class AppManager:
+    """Core app discovery + stats for HyperDev."""
+
+    @staticmethod
+    def get_app_status(app_name: str) -> str:
+        service = f"workpent-{app_name}.service"
+        try:
+            result = subprocess.run(
+                ["systemctl", "is-active", service],
+                capture_output=True,
+                text=True,
+            )
+            return "running" if result.stdout.strip() == "active" else "stopped"
+        except Exception:
+            return "unknown"
+
+    @staticmethod
+    def list_apps() -> List[Dict]:
+        """Return list of apps with env + status."""
+        apps: List[Dict] = []
+        if not APPS_BASE_DIR.exists():
+            return apps
+
+        for item in APPS_BASE_DIR.iterdir():
+            if not item.is_dir():
+                continue
+            app_name = item.name
+            env = read_env_file(item / ".env")
+            status = AppManager.get_app_status(app_name)
+            apps.append(
+                {
+                    "name": app_name,
+                    "path": str(item),
+                    "created": item.stat().st_ctime,
+                    "status": status,
+                    "domain": env.get("DOMAIN_NAME", ""),
+                    "port": env.get("APP_PORT", ""),
+                }
+            )
+
+        apps.sort(key=lambda x: x["created"], reverse=True)
+        return apps
+
+    @staticmethod
+    def get_system_stats() -> Dict:
+        """Very simple CPU / RAM / disk snapshot."""
+        cpu = "N/A"
+        mem = "N/A"
+        disk = "N/A"
+
+        # CPU
+        try:
+            top_out = subprocess.run(
+                ["top", "-bn1"], capture_output=True, text=True
+            ).stdout
+            for line in top_out.splitlines():
+                if "%Cpu(s)" in line:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        cpu = parts[1] + "%"
+                    break
+        except Exception:
+            pass
+
+        # Memory
+        try:
+            free_out = subprocess.run(
+                ["free", "-m"], capture_output=True, text=True
+            ).stdout.splitlines()
+            if len(free_out) > 1:
+                parts = free_out[1].split()
+                if len(parts) >= 3:
+                    used = int(parts[2])
+                    total = int(parts[1])
+                    mem = f"{used / total * 100:.1f}%"
+        except Exception:
+            pass
+
+        # Disk
+        try:
+            df_out = subprocess.run(
+                ["df", "-h", "/"], capture_output=True, text=True
+            ).stdout.splitlines()
+            if len(df_out) > 1:
+                parts = df_out[1].split()
+                if len(parts) >= 5:
+                    disk = parts[4]  # "Use%" column
+        except Exception:
+            pass
+
+        return {"cpu": cpu, "memory": mem, "disk": disk}
+
+
+# ---------------------------------------------------------------------------
+# RENDER HELPERS (HTML snippets)
+# ---------------------------------------------------------------------------
+
+def render_status_badge(status: str) -> str:
+    if status == "running":
+        return "<span class='badge badge-ok'>RUNNING</span>"
+    if status == "stopped":
+        return "<span class='badge badge-bad'>STOPPED</span>"
+    return "<span class='badge badge-unknown'>UNKNOWN</span>"
+
+
+def render_apps_sidebar(apps: List[Dict]) -> str:
+    """Left-sidebar style app list (KD-style project browser)."""
+    if not apps:
+        return "<p class='empty'>No apps yet. Create one on the left.</p>"
+
+    rows = []
+    for app in apps:
+        status_html = render_status_badge(app["status"])
+        domain = app.get("domain") or ""
+        port = app.get("port") or ""
+        meta = []
+        if domain:
+            meta.append(domain)
+        if port:
+            meta.append(f"port {port}")
+        meta_str = " · ".join(meta) if meta else "&nbsp;"
+
+        rows.append(
+            f"""
+            <button class="app-row"
+                    onclick="loadAppDetail('{app['name']}')">
+                <div class="app-row-main">
+                    <div class="app-name">{app['name']}</div>
+                    <div class="app-meta">{meta_str}</div>
+                </div>
+                <div class="app-row-status">{status_html}</div>
+            </button>
+            """
+        )
+
+    return "\n".join(rows)
+
+
+def render_env_table(env: Dict[str, str]) -> str:
+    if not env:
+        return "<p class='empty'>No entries in .env yet.</p>"
+
+    rows = []
+    for k, v in sorted(env.items()):
+        masked = v
+        if any(s in k.upper() for s in ["KEY", "SECRET", "TOKEN", "PASS"]):
+            masked = "••••••••"
+        rows.append(
+            f"""
+            <tr>
+              <td><code>{k}</code></td>
+              <td>{masked}</td>
+              <td>
+                <button class="btn btn-ghost btn-xs"
+                        onclick="editEnvEntry('{k}', '{v.replace('\"','&quot;')}')">
+                  Edit
+                </button>
+                <button class="btn btn-ghost btn-xs"
+                        onclick="deleteEnvEntry('{k}')">
+                  Delete
+                </button>
+              </td>
+            </tr>
+            """
+        )
+    return "\n".join(rows)
+
+
+def render_db_block(env: Dict[str, str]) -> str:
+    meta = detect_db_from_env(env)
+    if meta["type"] == "none":
+        return "<p class='empty'>No DATABASE_URL configured.</p>"
+
+    if meta["type"] == "sqlite":
+        stats = sqlite_db_stats(meta["url"])
+        if "error" in stats:
+            return f"<p class='error'>{stats['error']}</p>"
+
+        rows = []
+        for t in stats["tables"]:
+            rows.append(
+                f"<tr><td><code>{t['name']}</code></td><td>{t['rows']}</td></tr>"
+            )
+
+        table_html = (
+            "<table class='simple'><thead>"
+            "<tr><th>Table</th><th>Rows</th></tr>"
+            "</thead><tbody>"
+            + "".join(rows)
+            + "</tbody></table>"
+        )
+
+        return (
+            f"<p class='pill'>SQLite DB: <code>{stats['db_path']}</code></p>"
+            + table_html
+        )
+
+    # For now, non-sqlite: just show type & URL info
+    return (
+        f"<p class='pill'>DB Type: {meta['type']}</p>"
+        f"<p class='pill'>URL: <code>{meta['url']}</code></p>"
+        f"<p class='empty'>{meta['info']}</p>"
+    )
+
+
+def render_app_detail(app_name: str) -> str:
+    """Single HTML block (right side) with all EPIC-1 goodies."""
+    app_dir = APPS_BASE_DIR / app_name
+    if not app_dir.is_dir():
+        return "<p class='error'>App not found.</p>"
+
+    env = read_env_file(app_dir / ".env")
+    status = AppManager.get_app_status(app_name)
+    status_html = render_status_badge(status)
+    venv_info = get_venv_paths(app_dir)
+
+    venv_dir = venv_info["venv_dir"]
+    python_path = venv_info["python"]
+    pip_path = venv_info["pip"]
+
+    venv_lines = []
+    if venv_dir:
+        venv_lines.append(f"<div><span class='pill'>Venv: <code>{venv_dir}</code></span></div>")
+    else:
+        venv_lines.append("<div class='empty'>No virtualenv detected yet.</div>")
+
+    if python_path:
+        try:
+            proc = subprocess.run(
+                [str(python_path), "--version"],
+                capture_output=True,
+                text=True,
+            )
+            pyver = proc.stdout.strip() or proc.stderr.strip()
+        except Exception:
+            pyver = "Unknown"
+        venv_lines.append(f"<div><span class='pill'>Python: {pyver}</span></div>")
+    if pip_path:
+        venv_lines.append(f"<div><span class='pill'>pip: <code>{pip_path}</code></span></div>")
+
+    venv_html = "\n".join(venv_lines)
+
+    db_html = render_db_block(env)
+
+    return f"""
+    <div class="app-detail-header">
+        <div>
+            <div class="app-detail-title">{app_name}</div>
+            <div class="app-detail-path"><code>{app_dir}</code></div>
+        </div>
+        <div class="app-detail-status">
+            {status_html}
+        </div>
+    </div>
+
+    <div class="app-detail-grid">
+      <!-- Actions -->
+      <section class="card card-sm">
+        <div class="card-header">
+            <div class="card-title">Lifecycle</div>
+        </div>
+        <div class="button-row">
+          <button class="btn btn-ghost btn-sm" onclick="serviceAction('{app_name}', 'start')">Start</button>
+          <button class="btn btn-ghost btn-sm" onclick="serviceAction('{app_name}', 'stop')">Stop</button>
+          <button class="btn btn-ghost btn-sm" onclick="serviceAction('{app_name}', 'restart')">Restart</button>
+        </div>
+        <div class="button-row">
+          <button class="btn btn-ghost btn-sm" onclick="snapshotApp('{app_name}')">Snapshot</button>
+          <button class="btn btn-ghost btn-sm" onclick="restoreLast('{app_name}')">Restore last</button>
+          <button class="btn btn-ghost btn-sm" onclick="deleteApp('{app_name}')">Soft delete</button>
+        </div>
+        <div class="button-row">
+          <button class="btn btn-ghost btn-sm" onclick="downloadApp('{app_name}')">Download ZIP</button>
+          <button class="btn btn-ghost btn-sm" onclick="openFileBrowser('{app_name}')">Browse files</button>
+        </div>
+        <div id="app-action-result" class="ai-note"></div>
+      </section>
+
+      <!-- Env editor -->
+      <section class="card card-sm">
+        <div class="card-header">
+            <div class="card-title">Environment (.env)</div>
+        </div>
+        <div class="env-table-wrapper">
+            <table class="simple">
+              <thead>
+                <tr><th>Key</th><th>Value</th><th></th></tr>
+              </thead>
+              <tbody id="env-table-body">
+                {render_env_table(env)}
+              </tbody>
+            </table>
+        </div>
+        <form id="env-form" onsubmit="submitEnvForm(event, '{app_name}')">
+          <div class="env-form-row">
+            <input type="text" id="env-key" placeholder="KEY" required />
+            <input type="text" id="env-value" placeholder="value" required />
+            <button class="btn btn-primary btn-sm" type="submit">Save</button>
+          </div>
+        </form>
+        <div class="pill">Secrets (KEY/SECRET/TOKEN/PASS) are masked in the table but stored unchanged.</div>
+      </section>
+
+      <!-- Dependency manager -->
+      <section class="card card-sm">
+        <div class="card-header">
+            <div class="card-title">Dependencies (pip)</div>
+        </div>
+        <div id="deps-info">
+          <p class="pill">Venv &amp; Python</p>
+          {venv_html}
+        </div>
+        <div class="button-row">
+          <button class="btn btn-ghost btn-sm" onclick="loadDeps('{app_name}')">List packages</button>
+          <button class="btn btn-ghost btn-sm" onclick="loadDepsOutdated('{app_name}')">Outdated</button>
+        </div>
+        <form id="deps-install-form" onsubmit="installPackage(event, '{app_name}')">
+          <div class="env-form-row">
+            <input type="text" id="deps-package" placeholder="fastapi==0.115.0" />
+            <button class="btn btn-primary btn-sm" type="submit">pip install</button>
+          </div>
+        </form>
+        <div class="button-row">
+          <button class="btn btn-ghost btn-sm" onclick="upgradeAllDeps('{app_name}')">Update outdated</button>
+        </div>
+        <pre id="deps-output" class="log-box"></pre>
+      </section>
+
+      <!-- Database view -->
+      <section class="card card-sm">
+        <div class="card-header">
+            <div class="card-title">Database</div>
+        </div>
+        <div id="db-panel">
+          {db_html}
+        </div>
+      </section>
+
+      <!-- Clone & Update -->
+      <section class="card card-sm">
+        <div class="card-header">
+            <div class="card-title">Clone / Update</div>
+        </div>
+        <form onsubmit="cloneApp(event, '{app_name}')">
+          <div class="env-form-row">
+            <input type="text" id="clone-name" placeholder="new-app-name" required />
+          </div>
+          <div class="env-form-row">
+            <input type="text" id="clone-domain" placeholder="new.domain.com" required />
+          </div>
+          <div class="env-form-row">
+            <input type="number" id="clone-port" placeholder="8200" required />
+          </div>
+          <button class="btn btn-primary btn-sm" type="submit">Clone app folder</button>
+          <div class="pill">This only clones /srv/workpent/apps/* and .env. Run your existing deploy script manually to create new systemd/nginx.</div>
+        </form>
+
+        <hr class="divider" />
+
+        <form onsubmit="updateAppZip(event, '{app_name}')"
+              enctype="multipart/form-data">
+          <div class="env-form-row">
+            <input type="file" id="update-zip" name="zip_file" accept=".zip" required />
+          </div>
+          <button class="btn btn-primary btn-sm" type="submit">Upload ZIP &amp; update code</button>
+          <div class="pill">We snapshot first, then replace files from ZIP (excluding .venv / __pycache__ / .git).</div>
+        </form>
+        <div id="clone-update-result" class="ai-note"></div>
+      </section>
+
+      <!-- Logs -->
+      <section class="card card-lg">
+        <div class="card-header">
+            <div class="card-title">Service Logs</div>
+        </div>
+        <div class="button-row">
+          <button class="btn btn-ghost btn-sm" onclick="loadLogs('{app_name}')">Refresh logs</button>
+        </div>
+        <pre id="logs-panel" class="logs-panel">No logs loaded yet.</pre>
+      </section>
+    </div>
+    """
+
+
+# ---------------------------------------------------------------------------
+# MAIN PAGE
+# ---------------------------------------------------------------------------
+
+@app.get("/", response_class=HTMLResponse)
+async def index() -> HTMLResponse:
+    apps = AppManager.list_apps()
+    stats = AppManager.get_system_stats()
+
+    apps_sidebar = render_apps_sidebar(apps)
+
+    html = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Workpent HyperDev Console</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+  <style>
+    :root {{
+      --bg: #020617;
+      --bg-card: #020617;
+      --border: #020617;
+      --fg: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #6366f1;
+      --accent-soft: rgba(99,102,241,0.2);
+      --danger: #ef4444;
+      --danger-soft: rgba(239,68,68,0.2);
+      --ok: #22c55e;
+      --ok-soft: rgba(34,197,94,0.2);
+    }}
+
+    * {{
+      box-sizing: border-box;
+    }}
+
+    body {{
+      margin: 0;
+      padding: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+                   sans-serif;
+      background: radial-gradient(circle at top, #0f172a, #020617);
+      color: var(--fg);
+    }}
+
+    a {{ color: var(--accent); text-decoration: none; }}
+
+    .shell {{
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 16px;
+    }}
+
+    .header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 16px;
+    }}
+    .header-title {{
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }}
+    .header-title h1 {{
+      margin: 0;
+      font-size: 22px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }}
+    .tagline {{
+      font-size: 12px;
+      color: var(--muted);
+    }}
+
+    .metrics {{
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }}
+    .metric-card {{
+      background: var(--bg-card);
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      padding: 8px 14px;
+      font-size: 11px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 120px;
+    }}
+    .metric-label {{
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 10px;
+    }}
+    .metric-value {{
+      font-size: 14px;
+      font-weight: 600;
+    }}
+
+    .grid {{
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1.5fr) minmax(0, 2fr);
+      gap: 12px;
+      align-items: flex-start;
+    }}
+
+    .card {{
+      background: var(--bg-card);
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      padding: 12px;
+      font-size: 13px;
+    }}
+    .card-sm {{ padding: 10px; }}
+    .card-lg {{ padding: 10px; grid-column: 1 / -1; }}
+
+    .card-header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }}
+    .card-title {{
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }}
+
+    .field, .form-group {{
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-bottom: 8px;
+    }}
+
+    label {{
+      font-size: 11px;
+      color: var(--muted);
+    }}
+
+    input[type="text"],
+    input[type="number"],
+    input[type="file"],
+    textarea {{
+      background: #020617;
+      border-radius: 10px;
+      border: 1px solid #1e293b;
+      padding: 7px 10px;
+      color: var(--fg);
+      font-size: 13px;
+    }}
+    input:focus,
+    textarea:focus {{
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent-soft);
+    }}
+
+    textarea {{
+      resize: vertical;
+      min-height: 80px;
+    }}
+
+    .btn {{
+      border-radius: 999px;
+      border: none;
+      padding: 6px 12px;
+      font-size: 12px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }}
+    .btn-primary {{
+      background: var(--accent);
+      color: white;
+    }}
+    .btn-secondary {{
+      background: #0f172a;
+      color: var(--fg);
+      border: 1px solid #1f2937;
+    }}
+    .btn-ghost {{
+      background: transparent;
+      color: var(--fg);
+      border: 1px solid #1e293b;
+    }}
+    .btn-sm {{ font-size: 11px; padding: 4px 9px; }}
+    .btn-xs {{ font-size: 10px; padding: 3px 8px; }}
+
+    .badge {{
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid #1e293b;
+      background: #020617;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }}
+    .badge-ok {{
+      background: var(--ok-soft);
+      border-color: var(--ok-soft);
+      color: var(--ok);
+    }}
+    .badge-bad {{
+      background: var(--danger-soft);
+      border-color: var(--danger-soft);
+      color: var(--danger);
+    }}
+    .badge-unknown {{
+      background: #4b556333;
+      color: #e5e7eb;
+    }}
+
+    .pill {{
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 4px;
+    }}
+
+    .ai-note {{
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 6px;
+    }}
+
+    .apps-sidebar {{
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 520px;
+      overflow-y: auto;
+    }}
+    .apps-sidebar-header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
+    }}
+    .app-row {{
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid #111827;
+      padding: 6px 8px;
+      background: #020617;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      cursor: pointer;
+    }}
+    .app-row:hover {{
+      border-color: var(--accent);
+      background: #020617;
+    }}
+    .app-row-main {{
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-align: left;
+      align-items: flex-start;
+    }}
+    .app-name {{
+      font-size: 12px;
+      font-weight: 500;
+    }}
+    .app-meta {{
+      font-size: 11px;
+      color: var(--muted);
+    }}
+    .app-row-status {{
+      font-size: 10px;
+    }}
+
+    .empty {{
+      font-size: 12px;
+      color: var(--muted);
+    }}
+
+    .logs-panel {{
+      background: #020617;
+      border-radius: 10px;
+      border: 1px solid #1f2937;
+      padding: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 11px;
+      max-height: 260px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }}
+
+    .log-box {{
+      background: #020617;
+      border-radius: 10px;
+      border: 1px solid #1f2937;
+      padding: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 11px;
+      min-height: 60px;
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }}
+
+    .error {{
+      color: var(--danger);
+      font-size: 12px;
+    }}
+
+    .footer {{
+      margin-top: 14px;
+      font-size: 11px;
+      color: var(--muted);
+      text-align: center;
+    }}
+
+    .app-detail-header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }}
+    .app-detail-title {{
+      font-size: 16px;
+      font-weight: 600;
+    }}
+    .app-detail-path {{
+      font-size: 11px;
+      color: var(--muted);
+    }}
+
+    .app-detail-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 10px;
+    }}
+
+    .button-row {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 6px;
+    }}
+
+    .env-form-row {{
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+    }}
+    .env-form-row input {{
+      flex: 1;
+    }}
+
+    .env-table-wrapper {{
+      max-height: 180px;
+      overflow-y: auto;
+    }}
+
+    table.simple {{
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }}
+    table.simple th,
+    table.simple td {{
+      padding: 4px 6px;
+      border-bottom: 1px solid #111827;
+    }}
+    table.simple th {{
+      color: var(--muted);
+      font-size: 11px;
+      text-align: left;
+    }}
+
+    .divider {{
+      border: none;
+      border-top: 1px solid #111827;
+      margin: 8px 0;
+    }}
+
+    /* Modal for code + files */
+    .modal-backdrop {{
+      position: fixed;
+      inset: 0;
+      background: rgba(15,23,42,0.85);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+    }}
+    .modal {{
+      background: #020617;
+      border-radius: 16px;
+      border: 1px solid #020617;
+      width: min(1000px, 95vw);
+      max-height: 90vh;
+      display: flex;
+      flex-direction: column;
+    }}
+    .modal-header {{
+      padding: 10px 14px;
+      border-bottom: 1px solid #020617;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+    }}
+    .modal-body {{
+      padding: 10px;
+      overflow: auto;
+      display: flex;
+      gap: 10px;
+    }}
+    .file-tree {{
+      width: 260px;
+      border-right: 1px solid #020617;
+      padding-right: 8px;
+      overflow-y: auto;
+      font-size: 12px;
+    }}
+    .file-tree ul {{
+      list-style: none;
+      padding-left: 10px;
+    }}
+    .file-tree button {{
+      background: none;
+      border: none;
+      color: #e5e7eb;
+      font-size: 12px;
+      cursor: pointer;
+      padding: 2px 0;
+      text-align: left;
+      width: 100%;
+    }}
+    .file-tree button:hover {{
+      color: #f97316;
+    }}
+    .code-wrapper {{
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }}
+    .code-view {{
+      flex: 1;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 12px;
+      white-space: pre;
+      background: #020617;
+      border-radius: 8px;
+      border: 1px solid #020617;
+      padding: 8px;
+      color: #e5e7eb;
+      resize: none;
+      min-height: 300px;
+    }}
+    .modal-footer {{
+      border-top: 1px solid #020617;
+      padding: 8px 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+    }}
+
+    @media (max-width: 1080px) {{
+      .grid {{
+        grid-template-columns: minmax(0, 1fr);
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="header">
+      <div class="header-title">
+        <h1><span style="opacity:0.6;">Workpent</span> HyperDev Console</h1>
+        <div class="tagline">
+          KD-style project browser • OTP / SMS / payment API factory • App empire launcher
+        </div>
+      </div>
+      <div class="metrics">
+        <div class="metric-card">
+          <div class="metric-label">MANAGED APPS</div>
+          <div class="metric-value">{len(apps)}</div>
+          <div class="metric-label">on this VPS</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">CPU</div>
+          <div class="metric-value">{stats['cpu']}</div>
+          <div class="metric-label">load</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">MEMORY</div>
+          <div class="metric-value">{stats['memory']}</div>
+          <div class="metric-label">used</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">DISK</div>
+          <div class="metric-value">{stats['disk']}</div>
+          <div class="metric-label">root volume</div>
+        </div>
+      </div>
+    </header>
+
+    <div class="grid">
+      <!-- LEFT: AI Wizard + Create -->
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title">AI APP WIZARD</div>
+          <span class="badge">Idea capture only (safe)</span>
+        </div>
+        <form hx-post="/ai-idea" hx-target="#ai-idea-result" hx-swap="innerHTML">
+          <textarea name="idea"
+            placeholder="Describe your next API in plain English. Example: WhatsApp OTP service with Redis caching, rate limiting, admin dashboard, webhook callbacks..."
+          ></textarea>
+          <div style="margin-top:8px;">
+            <button class="btn btn-primary btn-sm" type="submit">Save idea</button>
+          </div>
+        </form>
+        <div id="ai-idea-result" class="ai-note"></div>
+
+        <hr class="divider" />
+
+        <div class="card-header">
+          <div class="card-title">CREATE NEW API</div>
+          <span class="badge">FastAPI · systemd · nginx</span>
+        </div>
+        <form id="create-app-form"
+              hx-post="/create-app"
+              hx-target="#create-result"
+              hx-swap="innerHTML">
+          <div class="field">
+            <label>API Name</label>
+            <input name="app_name" id="app_name"
+              placeholder="sms-api, payment-service, auth-api"
+              required pattern="[a-z0-9-]+" />
+          </div>
+          <div class="field">
+            <label>Domain Name</label>
+            <input name="domain_name" id="domain_name"
+              placeholder="api.workpent.com" required />
+          </div>
+          <div class="field">
+            <label>Port Number (internal gunicorn port)</label>
+            <input name="app_port" id="app_port"
+              type="number" min="8000" max="9000" value="8100" required />
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:4px;">
+            <button class="btn btn-primary btn-sm" type="submit">Create API Service</button>
+            <button class="btn btn-ghost btn-sm" type="button" onclick="fillExample()">Fill Example</button>
+            <button class="btn btn-ghost btn-sm" type="button" onclick="clearForm()">Clear</button>
+          </div>
+        </form>
+        <div id="create-result" class="ai-note"></div>
+      </section>
+
+      <!-- MIDDLE: KD-style apps sidebar -->
+      <section class="card">
+        <div class="apps-sidebar-header">
+          <div class="card-title">PROJECTS</div>
+          <span class="badge">{len(apps)} apps</span>
+        </div>
+        <div class="apps-sidebar" id="apps-sidebar">
+          {apps_sidebar}
+        </div>
+      </section>
+
+      <!-- RIGHT: App detail (env, deps, DB, logs...) -->
+      <section class="card">
+        <div id="app-detail">
+          <p class="empty">
+            Select an app on the left sidebar to view lifecycle controls, .env editor,
+            dependencies, DB stats and logs.
+          </p>
+        </div>
+      </section>
+    </div>
+
+    <section class="card" style="margin-top:10px;">
+      <div class="card-header">
+        <div class="card-title">System &amp; Intelligence</div>
+      </div>
+      <div class="system-grid">
+        <div><span class="pill">Apps base: <code>{APPS_BASE_DIR}</code></span></div>
+        <div><span class="pill">Template: FastAPI + systemd + nginx</span></div>
+        <div><span class="pill">Port range: 8000–9000</span></div>
+        <div><span class="pill">Creator CLI: <code>{CREATE_CMD}</code></span></div>
+      </div>
+      <div class="ai-note">
+        This console never edits systemd / nginx / deploy scripts – it only uses them.
+        All app lifecycle &amp; EPIC 1 features stay inside /srv/workpent/apps.
+      </div>
+    </section>
+
+    <footer class="footer">
+      Workpent HyperDev Console · KD Project Browser ·
+      <span id="time" hx-get="/time" hx-trigger="load, every 1s"
+            hx-swap="innerHTML"></span>
+    </footer>
+  </div>
+
+  <!-- FILE BROWSER + CODE EDITOR MODAL -->
+  <div class="modal-backdrop" id="code-modal-backdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <div id="code-modal-title">Code &amp; Files</div>
+        <button class="btn btn-ghost btn-sm" onclick="closeCodeModal()">Close</button>
+      </div>
+      <div class="modal-body">
+        <div class="file-tree" id="file-tree">
+          <!-- filled from /list-files -->
+        </div>
+        <div class="code-wrapper">
+          <textarea id="code-modal-content" class="code-view">// Select a file on the left to view/edit.</textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <div style="display:flex;gap:6px;align-items:center;">
+          <button class="btn btn-ghost btn-sm" onclick="saveCurrentFile()">Save file</button>
+          <button class="btn btn-ghost btn-sm" onclick="askAiForCode()">Ask AI to improve selection</button>
+        </div>
+        <div id="code-modal-status" style="color:#9ca3af;"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // -------- CREATE FORM HELPERS ----------
+    function fillExample() {{
+      document.getElementById('app_name').value = 'sms-api';
+      document.getElementById('domain_name').value = 'sms.workpent.com';
+      document.getElementById('app_port').value = '8110';
+    }}
+    function clearForm() {{
+      document.getElementById('create-app-form').reset();
+      document.getElementById('create-result').textContent = '';
+    }}
+
+    // -------- APP DETAIL LOADING (KD sidebar) ----------
+    let currentApp = null;
+    function loadAppDetail(appName) {{
+      currentApp = appName;
+      fetch(`/app-detail/${{encodeURIComponent(appName)}}`)
+        .then(r => r.text())
+        .then(html => {{
+          document.getElementById('app-detail').innerHTML = html;
+        }})
+        .catch(() => {{
+          document.getElementById('app-detail').innerHTML =
+            '<p class="error">Failed to load app detail.</p>';
+        }});
+    }}
+
+    // -------- SERVICE ACTIONS ----------
+    function serviceAction(appName, action) {{
+      fetch('/app-action', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ app_name: appName, action: action }})
+      }})
+      .then(r => r.json())
+      .then(data => {{
+        const el = document.getElementById('app-action-result');
+        if (el) el.textContent = data.message || '';
+      }});
+    }}
+
+    function loadLogs(appName) {{
+      fetch(`/app-logs?app_name=${{encodeURIComponent(appName)}}`)
+        .then(r => r.text())
+        .then(text => {{
+          const el = document.getElementById('logs-panel');
+          if (el) el.textContent = text;
+        }});
+    }}
+
+    function snapshotApp(appName) {{
+      const fd = new FormData();
+      fd.append('app_name', appName);
+      fetch('/snapshot-app', {{ method: 'POST', body: fd }})
+        .then(r => r.text())
+        .then(html => {{
+          const el = document.getElementById('app-action-result');
+          if (el) el.innerHTML = html;
+        }});
+    }}
+
+    function restoreLast(appName) {{
+      const fd = new FormData();
+      fd.append('app_name', appName);
+      fetch('/restore-last', {{ method: 'POST', body: fd }})
+        .then(r => r.text())
+        .then(html => {{
+          const el = document.getElementById('app-action-result');
+          if (el) el.innerHTML = html;
+        }});
+    }}
+
+    function deleteApp(appName) {{
+      if (!confirm(`Soft delete ${{appName}}?`)) return;
+      const fd = new FormData();
+      fd.append('app_name', appName);
+      fetch('/delete-app', {{ method: 'POST', body: fd }})
+        .then(r => r.text())
+        .then(html => {{
+          const el = document.getElementById('app-action-result');
+          if (el) el.innerHTML = html;
+        }});
+    }}
+
+    function downloadApp(appName) {{
+      window.open(`/download-app?app_name=${{encodeURIComponent(appName)}}`, '_blank');
+    }}
+
+    // -------- ENV EDITOR ----------
+    function editEnvEntry(key, value) {{
+      document.getElementById('env-key').value = key;
+      document.getElementById('env-value').value = value;
+    }}
+
+    function deleteEnvEntry(key) {{
+      if (!currentApp) return;
+      if (!confirm(`Delete env key ${{key}}?`)) return;
+      fetch('/env-delete', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{
+          app_name: currentApp,
+          key: key
+        }})
+      }})
+      .then(r => r.text())
+      .then(html => {{
+        document.getElementById('app-detail').innerHTML = html;
+      }});
+    }}
+
+    function submitEnvForm(ev, appName) {{
+      ev.preventDefault();
+      const key = document.getElementById('env-key').value.trim();
+      const value = document.getElementById('env-value').value;
+      if (!key) return;
+      fetch('/env-save', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{
+          app_name: appName,
+          key: key,
+          value: value
+        }})
+      }})
+      .then(r => r.text())
+      .then(html => {{
+        document.getElementById('app-detail').innerHTML = html;
+      }});
+    }}
+
+    // -------- DEPENDENCY MANAGER ----------
+    function loadDeps(appName) {{
+      fetch(`/deps-list/${{encodeURIComponent(appName)}}`)
+        .then(r => r.text())
+        .then(txt => {{
+          const el = document.getElementById('deps-output');
+          if (el) el.textContent = txt;
+        }});
+    }}
+
+    function loadDepsOutdated(appName) {{
+      fetch(`/deps-outdated/${{encodeURIComponent(appName)}}`)
+        .then(r => r.text())
+        .then(txt => {{
+          const el = document.getElementById('deps-output');
+          if (el) el.textContent = txt;
+        }});
+    }}
+
+    function installPackage(ev, appName) {{
+      ev.preventDefault();
+      const pkg = document.getElementById('deps-package').value.trim();
+      if (!pkg) return;
+      fetch('/deps-install', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{
+          app_name: appName,
+          package: pkg
+        }})
+      }})
+      .then(r => r.text())
+      .then(html => {{
+        document.getElementById('app-detail').innerHTML = html;
+      }});
+    }}
+
+    function upgradeAllDeps(appName) {{
+      if (!confirm('Upgrade all outdated packages via pip?')) return;
+      fetch('/deps-upgrade-all', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ app_name: appName }})
+      }})
+      .then(r => r.text())
+      .then(html => {{
+        document.getElementById('app-detail').innerHTML = html;
+      }});
+    }}
+
+    // -------- CLONE & UPDATE ----------
+    function cloneApp(ev, sourceApp) {{
+      ev.preventDefault();
+      const name = document.getElementById('clone-name').value.trim();
+      const domain = document.getElementById('clone-domain').value.trim();
+      const port = document.getElementById('clone-port').value.trim();
+      if (!name || !domain || !port) return;
+
+      fetch('/clone-app', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{
+          source_app: sourceApp,
+          new_app_name: name,
+          domain_name: domain,
+          app_port: port
+        }})
+      }})
+      .then(r => r.text())
+      .then(html => {{
+        document.getElementById('clone-update-result').innerHTML = html;
+      }});
+    }}
+
+    function updateAppZip(ev, appName) {{
+      ev.preventDefault();
+      const input = document.getElementById('update-zip');
+      if (!input.files.length) return;
+      const fd = new FormData();
+      fd.append('app_name', appName);
+      fd.append('zip_file', input.files[0]);
+      fetch('/update-app', {{
+        method: 'POST',
+        body: fd
+      }})
+      .then(r => r.text())
+      .then(html => {{
+        document.getElementById('clone-update-result').innerHTML = html;
+      }});
+    }}
+
+    // -------- FILE BROWSER MODAL ----------
+    let currentCodeApp = null;
+    let currentCodePath = null;
+
+    function openFileBrowser(appName) {{
+      currentCodeApp = appName;
+      currentCodePath = null;
+      const backdrop = document.getElementById('code-modal-backdrop');
+      const title = document.getElementById('code-modal-title');
+      const content = document.getElementById('code-modal-content');
+      const status = document.getElementById('code-modal-status');
+      const tree = document.getElementById('file-tree');
+      title.textContent = appName + ' · files';
+      content.value = '// Select a file on the left to view/edit.';
+      status.textContent = '';
+      backdrop.style.display = 'flex';
+      fetch(`/list-files?app_name=${{encodeURIComponent(appName)}}&path=.`)
+        .then(r => r.text())
+        .then(html => {{ tree.innerHTML = html; }})
+        .catch(() => {{ tree.innerHTML = '<p>Error loading file list.</p>'; }});
+    }}
+
+    function loadFile(appName, relPath) {{
+      currentCodeApp = appName;
+      currentCodePath = relPath;
+      const content = document.getElementById('code-modal-content');
+      const status = document.getElementById('code-modal-status');
+      status.textContent = 'Loading ' + relPath + ' ...';
+      fetch(`/view-file?app_name=${{encodeURIComponent(appName)}}&path=${{encodeURIComponent(relPath)}}`)
+        .then(r => r.text())
+        .then(txt => {{
+          content.value = txt;
+          status.textContent = relPath;
+        }})
+        .catch(() => {{
+          content.value = '// Error loading file';
+          status.textContent = 'Failed to load file.';
+        }});
+    }}
+
+    function closeCodeModal() {{
+      document.getElementById('code-modal-backdrop').style.display = 'none';
+    }}
+
+    function saveCurrentFile() {{
+      if (!currentCodeApp || !currentCodePath) {{
+        alert('Select a file first.');
+        return;
+      }}
+      const content = document.getElementById('code-modal-content').value;
+      const status = document.getElementById('code-modal-status');
+      status.textContent = 'Saving...';
+      fetch('/save-file', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{
+          app_name: currentCodeApp,
+          path: currentCodePath,
+          content: content
+        }})
+      }})
+      .then(r => r.json())
+      .then(data => {{
+        status.textContent = data.message || 'Saved.';
+      }})
+      .catch(() => {{
+        status.textContent = 'Error saving file.';
+      }});
+    }}
+
+    function askAiForCode() {{
+      if (!currentCodeApp || !currentCodePath) {{
+        alert('Select a file first.');
+        return;
+      }}
+      const textarea = document.getElementById('code-modal-content');
+      const status = document.getElementById('code-modal-status');
+      const selection = window.getSelection().toString() || textarea.value;
+      status.textContent = 'Thinking...';
+      fetch('/ai-suggest', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{
+          app_name: currentCodeApp,
+          file_path: currentCodePath,
+          selection: selection,
+          instruction: 'Suggest safe improvements and bug fixes for this code.'
+        }})
+      }})
+      .then(r => r.json())
+      .then(data => {{
+        status.textContent = data.message || 'AI suggestion ready.';
+        if (data.suggestion) {{
+          alert('AI suggestion:\\n\\n' + data.suggestion);
+        }}
+      }})
+      .catch(() => {{
+        status.textContent = 'Error contacting AI.';
+      }});
+    }}
+  </script>
+</body>
+</html>
+"""
+    return HTMLResponse(html)
+
+
+# ---------------------------------------------------------------------------
+# SMALL ROUTES / PARTIALS
+# ---------------------------------------------------------------------------
+
+@app.get("/time", response_class=HTMLResponse)
+async def time_partial() -> HTMLResponse:
+    return HTMLResponse(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+@app.get("/app-detail/{app_name}", response_class=HTMLResponse)
+async def app_detail(app_name: str) -> HTMLResponse:
+    return HTMLResponse(render_app_detail(app_name))
+
+
+@app.post("/create-app", response_class=HTMLResponse)
+async def create_app(
+    app_name: str = Form(...),
+    domain_name: str = Form(...),
+    app_port: str = Form(...),
+) -> HTMLResponse:
+    """Call workpent-create CLI. We don't touch systemd/nginx templates."""
+    try:
+        proc = subprocess.run(
+            [CREATE_CMD, app_name, domain_name, app_port],
+            capture_output=True,
+            text=True,
+        )
+        output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        if proc.returncode == 0:
+            return HTMLResponse(
+                f"<span class='badge badge-ok'>Created {app_name}</span><pre class='log-box'>{output}</pre>"
+            )
+        return HTMLResponse(
+            f"<span class='badge badge-bad'>Failed to create {app_name}</span>"
+            f"<pre class='log-box'>{output}</pre>"
+        )
+    except Exception as e:
+        return HTMLResponse(
+            f"<span class='badge badge-bad'>Error running workpent-create: {e}</span>"
+        )
+
+
+@app.post("/app-action")
+async def app_action(request: Request):
+    payload = await request.json()
+    app_name = payload.get("app_name")
+    action = payload.get("action")
+    if not app_name or action not in {"start", "stop", "restart"}:
+        return JSONResponse(
+            {"status": "error", "message": "Invalid app_name or action"}, status_code=400
+        )
+
+    service_name = f"workpent-{app_name}.service"
+    try:
+        result = subprocess.run(
+            ["systemctl", action, service_name],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return JSONResponse(
+                {"status": "success", "message": f"{action.title()}ed {app_name}"}
+            )
+        return JSONResponse(
+            {
+                "status": "error",
+                "message": result.stderr or f"Failed to {action} service",
+            }
+        )
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)})
+
+
+@app.get("/app-logs", response_class=HTMLResponse)
+async def app_logs(app_name: str):
+    """Return last 80 lines of journal for the app service."""
+    service_name = f"workpent-{app_name}.service"
+    try:
+        result = subprocess.run(
+            ["journalctl", "-u", service_name, "-n", "80", "--no-pager"],
+            capture_output=True,
+            text=True,
+        )
+        logs = result.stdout or "(no logs yet)"
+    except Exception as e:
+        logs = f"Error reading logs: {e}"
+    return HTMLResponse(logs.replace("<", "&lt;").replace(">", "&gt;"))
+
+
+@app.get("/download-app")
+async def download_app(app_name: str):
+    """Create a temporary zip of the app (excluding heavy dirs) and return it."""
+    app_dir = APPS_BASE_DIR / app_name
+    if not app_dir.is_dir():
+        return JSONResponse({"error": "App not found"}, status_code=404)
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f"{app_name}-zip-"))
+
+    def _ignore(dirpath, names):
+        ignore_list = []
+        for n in [".venv", "__pycache__", ".git"]:
+            if n in names:
+                ignore_list.append(n)
+        return ignore_list
+
+    try:
+        copy_root = tmp_dir / app_name
+        shutil.copytree(app_dir, copy_root, ignore=_ignore)
+        zip_path = shutil.make_archive(str(tmp_dir / app_name), "zip", tmp_dir, app_name)
+        return FileResponse(zip_path, filename=f"{app_name}.zip")
+    finally:
+        # Let OS clean tmp_dir later; avoids race with download.
+        pass
+
+
+@app.get("/list-files", response_class=HTMLResponse)
+async def list_files(app_name: str, path: str = ".") -> HTMLResponse:
+    """Return a simple HTML file tree for the modal."""
+    base = APPS_BASE_DIR / app_name
+    root = (base / path).resolve()
+    try:
+        root.relative_to(base.resolve())
+    except ValueError:
+        return HTMLResponse("<p>Invalid path.</p>")
+    if not root.is_dir():
+        return HTMLResponse("<p>Not a directory.</p>")
+
+    entries = []
+    for item in sorted(root.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+        name = item.name
+        if name in {".venv", "__pycache__", ".git"}:
+            continue
+        rel = str(item.relative_to(base)).replace("\\", "/")
+        if item.is_dir():
+            entries.append(
+                f"<li><button onclick=\"loadFile('{app_name}','{rel}/__DIR__')\">{name}/</button></li>"
+            )
+        else:
+            entries.append(
+                f"<li><button onclick=\"loadFile('{app_name}','{rel}')\">{name}</button></li>"
+            )
+    html = "<ul>" + "".join(entries) + "</ul>"
+    return HTMLResponse(html)
+
+
+@app.get("/view-file", response_class=HTMLResponse)
+async def view_file(app_name: str, path: str):
+    base = APPS_BASE_DIR / app_name
+    target = (base / path).resolve()
+    try:
+        target.relative_to(base.resolve())
+    except ValueError:
+        return HTMLResponse("// Invalid path.")
+    if path.endswith("/__DIR__"):
+        # when clicking a folder name in tree: reload listing for that folder
+        clean = path[:-8]
+        return await list_files(app_name, clean or ".")
+    try:
+        return HTMLResponse(target.read_text())
+    except Exception as e:
+        return HTMLResponse(f"// Failed to read {target}: {e}")
+
+
+@app.post("/save-file")
+async def save_file(request: Request):
+    data = await request.json()
+    app_name = data.get("app_name")
+    rel_path = data.get("path")
+    content = data.get("content", "")
+    if not app_name or not rel_path:
+        return JSONResponse({"message": "Missing app_name or path."}, status_code=400)
+
+    base = APPS_BASE_DIR / app_name
+    target = (base / rel_path).resolve()
+    try:
+        target.relative_to(base.resolve())
+    except ValueError:
+        return JSONResponse({"message": "Invalid path."}, status_code=400)
+    try:
+        target.write_text(content)
+        return JSONResponse({"message": f"Saved {rel_path}."})
+    except Exception as e:
+        return JSONResponse({"message": f"Failed to save: {e}"}, status_code=500)
+
+
+@app.post("/snapshot-app", response_class=HTMLResponse)
+async def snapshot_app(request: Request) -> HTMLResponse:
+    data = await request.form()
+    app_name = data.get("app_name")
+    if not app_name:
+        return HTMLResponse("<span class='error'>No app provided.</span>")
+
+    app_dir = APPS_BASE_DIR / app_name
+    if not app_dir.is_dir():
+        return HTMLResponse("<span class='error'>App not found.</span>")
+
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    snap_dir = SNAPSHOT_BASE_DIR / app_name
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    zip_base = snap_dir / f"{app_name}-{ts}"
+    zip_path = shutil.make_archive(str(zip_base), "zip", app_dir)
+    return HTMLResponse(
+        f"<span class='badge badge-ok'>Snapshot created: {zip_path}</span>"
+    )
+
+
+@app.post("/restore-last", response_class=HTMLResponse)
+async def restore_last(request: Request) -> HTMLResponse:
+    data = await request.form()
+    app_name = data.get("app_name")
+    if not app_name:
+        return HTMLResponse("<span class='error'>No app provided.</span>")
+
+    snap_dir = SNAPSHOT_BASE_DIR / app_name
+    if not snap_dir.is_dir():
+        return HTMLResponse("<span class='error'>No snapshots found for this app.</span>")
+
+    zips = sorted(snap_dir.glob(f"{app_name}-*.zip"))
+    if not zips:
+        return HTMLResponse("<span class='error'>No snapshots found for this app.</span>")
+
+    latest = zips[-1]
+    app_dir = APPS_BASE_DIR / app_name
+    service = f"workpent-{app_name}.service"
+
+    try:
+        subprocess.run(["systemctl", "stop", service], capture_output=True, text=True)
+
+        trash_dir = APPS_BASE_DIR.parent / "trash"
+        trash_dir.mkdir(exist_ok=True)
+        if app_dir.exists():
+            new_name = trash_dir / f"{app_name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            shutil.move(str(app_dir), str(new_name))
+
+        app_dir.mkdir(parents=True, exist_ok=True)
+        shutil.unpack_archive(str(latest), str(app_dir), "zip")
+        subprocess.run(["systemctl", "start", service], capture_output=True, text=True)
+
+        return HTMLResponse(
+            f"<span class='badge badge-ok'>Restored {app_name} from snapshot {latest.name}</span>"
+        )
+    except Exception as e:
+        return HTMLResponse(
+            f"<span class='error'>Failed to restore snapshot: {e}</span>"
+        )
+
+
+@app.post("/delete-app", response_class=HTMLResponse)
+async def delete_app(request: Request) -> HTMLResponse:
+    """Stop + disable service, move app directory into deleted-apps."""
+    data = await request.form()
+    app_name = data.get("app_name")
+    if not app_name:
+        return HTMLResponse("<span class='error'>No app provided.</span>")
+
+    app_dir = APPS_BASE_DIR / app_name
+    service = f"workpent-{app_name}.service"
+
+    try:
+        subprocess.run(["systemctl", "stop", service], capture_output=True, text=True)
+        subprocess.run(
+            ["systemctl", "disable", service], capture_output=True, text=True
+        )
+
+        deleted_base = APPS_BASE_DIR.parent / "deleted-apps"
+        deleted_base.mkdir(exist_ok=True)
+        if app_dir.exists():
+            new_name = deleted_base / f"{app_name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            shutil.move(str(app_dir), str(new_name))
+
+        return HTMLResponse(
+            f"<span class='badge badge-ok'>Moved {app_name} to deleted-apps.</span>"
+        )
+    except Exception as e:
+        return HTMLResponse(
+            f"<span class='error'>Failed to delete app: {e}</span>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EPIC 1 – ENV EDITOR
+# ---------------------------------------------------------------------------
+
+@app.post("/env-save", response_class=HTMLResponse)
+async def env_save(request: Request) -> HTMLResponse:
+    data = await request.json()
+    app_name = data.get("app_name")
+    key = (data.get("key") or "").strip()
+    value = data.get("value") or ""
+    if not app_name or not key:
+        return HTMLResponse("<p class='error'>Missing app_name or key.</p>")
+
+    app_dir = APPS_BASE_DIR / app_name
+    env_path = app_dir / ".env"
+    env = read_env_file(env_path)
+    env[key] = value
+    try:
+        write_env_file(env_path, env)
+    except Exception as e:
+        return HTMLResponse(f"<p class='error'>Failed to write .env: {e}</p>")
+
+    # Re-render full app detail so UI stays in sync
+    return HTMLResponse(render_app_detail(app_name))
+
+
+@app.post("/env-delete", response_class=HTMLResponse)
+async def env_delete(request: Request) -> HTMLResponse:
+    data = await request.json()
+    app_name = data.get("app_name")
+    key = (data.get("key") or "").strip()
+    if not app_name or not key:
+        return HTMLResponse("<p class='error'>Missing app_name or key.</p>")
+
+    app_dir = APPS_BASE_DIR / app_name
+    env_path = app_dir / ".env"
+    env = read_env_file(env_path)
+    if key in env:
+        env.pop(key)
+        try:
+            write_env_file(env_path, env)
+        except Exception as e:
+            return HTMLResponse(f"<p class='error'>Failed to write .env: {e}</p>")
+
+    return HTMLResponse(render_app_detail(app_name))
+
+
+# ---------------------------------------------------------------------------
+# EPIC 1 – DEPENDENCY MANAGER
+# ---------------------------------------------------------------------------
+
+@app.get("/deps-list/{app_name}", response_class=HTMLResponse)
+async def deps_list(app_name: str) -> HTMLResponse:
+    res = run_pip_command(app_name, ["list"])
+    header = "pip list\n\n"
+    return HTMLResponse(header + (res["output"] or ""))
+
+
+@app.get("/deps-outdated/{app_name}", response_class=HTMLResponse)
+async def deps_outdated(app_name: str) -> HTMLResponse:
+    res = run_pip_command(app_name, ["list", "--outdated"])
+    header = "pip list --outdated\n\n"
+    return HTMLResponse(header + (res["output"] or ""))
+
+
+@app.post("/deps-install", response_class=HTMLResponse)
+async def deps_install(request: Request) -> HTMLResponse:
+    data = await request.json()
+    app_name = data.get("app_name")
+    package = (data.get("package") or "").strip()
+    if not app_name or not package:
+        return HTMLResponse("<p class='error'>Missing app_name or package.</p>")
+
+    res = run_pip_command(app_name, ["install", package])
+    # After installing, re-render app detail so venv info & deps panel stays fresh
+    detail = render_app_detail(app_name)
+    detail += f"<pre class='log-box'>{res['output']}</pre>"
+    return HTMLResponse(detail)
+
+
+@app.post("/deps-upgrade-all", response_class=HTMLResponse)
+async def deps_upgrade_all(request: Request) -> HTMLResponse:
+    data = await request.json()
+    app_name = data.get("app_name")
+    if not app_name:
+        return HTMLResponse("<p class='error'>Missing app_name.</p>")
+
+    # First get outdated list (for visibility)
+    res_out = run_pip_command(app_name, ["list", "--outdated"])
+    # Then upgrade using a simple "pip install --upgrade -r requirements.txt" if file exists,
+    # otherwise "pip list --outdated" output is more manual – for now we run "pip list --outdated"
+    # and then just call "pip list --outdated" again; you can refine later.
+    app_dir = APPS_BASE_DIR / app_name
+    req = app_dir / "requirements.txt"
+    if not req.is_file():
+        # If no requirements.txt, we just show outdated; no aggressive automatic upgrade.
+        detail = render_app_detail(app_name)
+        detail += "<pre class='log-box'>No requirements.txt found. Outdated packages:\n\n"
+        detail += res_out["output"] or ""
+        detail += "</pre>"
+        return HTMLResponse(detail)
+
+    res_up = run_pip_command(app_name, ["install", "--upgrade", "-r", str(req)])
+    detail = render_app_detail(app_name)
+    detail += "<pre class='log-box'>Outdated (before):\n\n"
+    detail += res_out["output"] or ""
+    detail += "\n\nUpgrade output:\n\n"
+    detail += res_up["output"] or ""
+    detail += "</pre>"
+    return HTMLResponse(detail)
+
+
+# ---------------------------------------------------------------------------
+# EPIC 1 – CLONE APP
+# ---------------------------------------------------------------------------
+
+@app.post("/clone-app", response_class=HTMLResponse)
+async def clone_app(request: Request) -> HTMLResponse:
+    data = await request.json()
+    source_app = (data.get("source_app") or "").strip()
+    new_app_name = (data.get("new_app_name") or "").strip()
+    domain_name = (data.get("domain_name") or "").strip()
+    app_port = (data.get("app_port") or "").strip()
+
+    if not source_app or not new_app_name or not domain_name or not app_port:
+        return HTMLResponse("<p class='error'>All fields are required.</p>")
+
+    src_dir = APPS_BASE_DIR / source_app
+    dst_dir = APPS_BASE_DIR / new_app_name
+
+    if not src_dir.is_dir():
+        return HTMLResponse("<p class='error'>Source app not found.</p>")
+    if dst_dir.exists():
+        return HTMLResponse("<p class='error'>Target app folder already exists.</p>")
+
+    try:
+        # Copy folder but skip heavy dirs
+        def _ignore(dirpath, names):
+            ignore = []
+            for n in [".venv", "__pycache__", ".git"]:
+                if n in names:
+                    ignore.append(n)
+            return ignore
+
+        shutil.copytree(src_dir, dst_dir, ignore=_ignore)
+
+        # Update .env in cloned app
+        env_path = dst_dir / ".env"
+        env = read_env_file(env_path)
+        env["APP_NAME"] = new_app_name
+        env["DOMAIN_NAME"] = domain_name
+        env["APP_PORT"] = app_port
+        write_env_file(env_path, env)
+
+        msg = (
+            f"<span class='badge badge-ok'>Cloned {source_app} → {new_app_name}</span>"
+            "<div class='ai-note'>Now run your existing deploy script inside the new app folder "
+            "to create systemd/nginx for this clone (the console does NOT touch infra).</div>"
+        )
+        return HTMLResponse(msg)
+    except Exception as e:
+        return HTMLResponse(f"<p class='error'>Failed to clone app: {e}</p>")
+
+
+# ---------------------------------------------------------------------------
+# EPIC 1 – UPDATE APP FROM ZIP
+# ---------------------------------------------------------------------------
+
+@app.post("/update-app", response_class=HTMLResponse)
+async def update_app(
+    request: Request,
+    app_name: str = Form(...),
+    zip_file: UploadFile = File(...),
+) -> HTMLResponse:
+    """
+    Update an existing app from an uploaded ZIP:
+      - Snapshot app first
+      - Stop service
+      - Extract ZIP into temp folder
+      - Copy files into app folder (skipping .venv / __pycache__ / .git / .env)
+      - If requirements.txt present, run pip install -r
+      - Restart service
+    """
+    app_dir = APPS_BASE_DIR / app_name
+    if not app_dir.is_dir():
+        return HTMLResponse("<p class='error'>App not found.</p>")
+
+    # Snapshot first
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    snap_dir = SNAPSHOT_BASE_DIR / app_name
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    zip_base = snap_dir / f"{app_name}-update-{ts}"
+    snap_path = shutil.make_archive(str(zip_base), "zip", app_dir)
+
+    # Save uploaded ZIP to temp
+    tmp_root = Path(tempfile.mkdtemp(prefix=f"{app_name}-update-"))
+    upload_path = tmp_root / zip_file.filename
+    with upload_path.open("wb") as f:
+        while True:
+            chunk = await zip_file.read(1024 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
+
+    extract_dir = tmp_root / "extract"
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.unpack_archive(str(upload_path), str(extract_dir), "zip")
+    except Exception as e:
+        return HTMLResponse(
+            f"<p class='error'>Failed to unpack ZIP: {e} (snapshot: {snap_path})</p>"
+        )
+
+    # If ZIP contains a single top-level folder, use that as root
+    contents = list(extract_dir.iterdir())
+    if len(contents) == 1 and contents[0].is_dir():
+        src_root = contents[0]
+    else:
+        src_root = extract_dir
+
+    # Stop service
+    service = f"workpent-{app_name}.service"
+    try:
+        subprocess.run(["systemctl", "stop", service], capture_output=True, text=True)
+    except Exception:
+        pass  # Don't fail if service isn't there
+
+    # Copy over files
+    try:
+        for root, dirs, files in os.walk(src_root):
+            rel = Path(root).relative_to(src_root)
+            # Skip heavy dirs
+            if any(part in {".venv", "__pycache__", ".git"} for part in rel.parts):
+                continue
+            dest_dir = app_dir / rel
+            dest_dir.mkdir(parents=True, exist_ok=True)
+
+            for fname in files:
+                if fname == ".env":
+                    # Never overwrite .env from update ZIP
+                    continue
+                src_file = Path(root) / fname
+                dest_file = dest_dir / fname
+                shutil.copy2(src_file, dest_file)
+    except Exception as e:
+        return HTMLResponse(
+            f"<p class='error'>Failed to copy files from ZIP: {e} (snapshot: {snap_path})</p>"
+        )
+
+    # If requirements.txt exists in app root, run pip install -r
+    req = app_dir / "requirements.txt"
+    if req.is_file():
+        res = run_pip_command(app_name, ["install", "-r", str(req)])
+        pip_msg = res["output"]
+    else:
+        pip_msg = "No requirements.txt, skipped pip install."
+
+    # Restart service
+    try:
+        subprocess.run(["systemctl", "start", service], capture_output=True, text=True)
+    except Exception:
+        pass
+
+    msg = (
+        f"<span class='badge badge-ok'>Updated {app_name} from ZIP.</span>"
+        f"<div class='ai-note'>Snapshot: <code>{snap_path}</code></div>"
+        f"<pre class='log-box'>{pip_msg}</pre>"
+    )
+    return HTMLResponse(msg)
+
+
+# ---------------------------------------------------------------------------
+# AI STUBS (IDEA + SUGGEST) – keep as lightweight placeholders
+# ---------------------------------------------------------------------------
+
+@app.post("/ai-idea", response_class=HTMLResponse)
+async def ai_idea(request: Request) -> HTMLResponse:
+    form = await request.form()
+    idea = (form.get("idea") or "").strip()
+    if not idea:
+        return HTMLResponse("<span class='error'>No idea text provided.</span>")
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # For now we just echo and timestamp. Later we can persist to a DB or file.
+    return HTMLResponse(
+        f"<div class='pill'>Idea saved at {ts}</div>"
+        f"<pre class='log-box'>{idea}</pre>"
+    )
+
+
+@app.post("/ai-suggest")
+async def ai_suggest(request: Request):
+    data = await request.json()
+    # Placeholder stub – we keep the endpoint for JS, but do nothing dangerous.
+    _ = data  # unused for now
+    return JSONResponse(
+        {
+            "message": "AI suggestion endpoint stub – wire to your preferred model later.",
+            "suggestion": "",
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# DEV SERVER ENTRYPOINT
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("app.main:app", host="0.0.0.0", port=9900, reload=True)
+

@@ -1,0 +1,1490 @@
+<!DOCTYPE html> <html lang="en"> <head>\  <meta charset="utf-8" />
+  <title>Workpent HyperDev Console</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --bg: #050717;
+      --bg-alt: #0b0f26;
+      --card: #10152f;
+      --card-soft: #121935;
+      --accent: #ff4ad8;
+      --accent-soft: #ff93f0;
+      --accent2: #4f9dff;
+      --border-soft: #252849;
+      --text-main: #f5f5ff;
+      --text-muted: #8688b0;
+      --danger: #ff4b6b;
+      --radius-lg: 18px;
+      --radius-pill: 999px;
+      --shadow-card: 0 18px 40px rgba(0,0,0,0.65);
+      --good: #37e499;
+      --bad: #ff4b6b;
+      --warn: #ffaa33;
+    }
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, #181b3f 0, #050717 40%, #050717 100%);
+      font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+      color: var(--text-main);
+    }
+
+    .container { display: flex; min-height: 100vh; }
+
+    .sidebar {
+      width: 260px;
+      background: var(--bg-alt);
+      padding: 20px 14px;
+      border-right: 1px solid var(--border-soft);
+      box-shadow: 0 0 12px rgba(0,0,0,0.6);
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .brand {
+      font-weight: 800;
+      font-size: 20px;
+      letter-spacing: .03em;
+      margin-bottom: 4px;
+    }
+    .brand span {
+      color: var(--accent-soft);
+    }
+    .brand-sub {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .server-chip {
+      margin-top: 10px;
+      padding: 6px 10px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.02);
+      border: 1px solid var(--border-soft);
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .app-list {
+      margin-top: 10px;
+      flex-grow: 1;
+      overflow-y: auto;
+    }
+    .app-list h2 {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin: 0 0 6px;
+      text-transform: uppercase;
+      letter-spacing: .12em;
+    }
+    .app-item {
+      padding: 10px 12px;
+      border-radius: 10px;
+      cursor: pointer;
+      margin-bottom: 6px;
+      border: 1px solid transparent;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .app-item:hover { background: #171b33; }
+    .app-item.active {
+      background: linear-gradient(135deg,#4f9dff,#ff4ad8);
+      color: #050717;
+      border-color: transparent;
+    }
+    .app-item-name {
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .app-item-meta {
+      font-size: 11px;
+      opacity: 0.9;
+    }
+    .status-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 4px;
+      background: var(--warn);
+    }
+    .status-dot.active { background: var(--good); }
+    .status-dot.inactive { background: var(--bad); }
+
+    .sidebar-bottom {
+      margin-top: 6px;
+    }
+    .btn {
+      border: none;
+      border-radius: var(--radius-pill);
+      padding: 7px 16px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: .02em;
+      background: var(--accent);
+      color: #050717;
+      transition: background .2s, transform .06s, box-shadow .06s;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.35);
+    }
+    .btn:hover { background: var(--accent-soft); transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+
+    .btn-secondary {
+      background: var(--card-soft);
+      color: var(--text-main);
+    }
+    .btn-secondary:hover { background: #21274b; }
+    .btn-danger {
+      background: var(--danger);
+      color: #fff;
+    }
+    .btn-danger:hover { background: #ff758d; }
+
+    .content {
+      flex-grow: 1;
+      padding: 24px 30px 26px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .page-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+    }
+    .page-title {
+      font-size: 24px;
+      font-weight: 700;
+    }
+    .page-sub {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+    .chip-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-size: 11px;
+    }
+    .chip {
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border-soft);
+      background: rgba(0,0,0,0.25);
+      color: var(--text-muted);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit,minmax(280px,1fr));
+      gap: 16px;
+    }
+
+    .card {
+      background: var(--card);
+      border-radius: var(--radius-lg);
+      padding: 16px 18px 14px;
+      border: 1px solid var(--border-soft);
+      box-shadow: var(--shadow-card);
+    }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .card-title {
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: .12em;
+      color: var(--text-muted);
+    }
+    .card-sub {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    textarea, input[type="text"] {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid var(--border-soft);
+      background: var(--bg-alt);
+      color: var(--text-main);
+      padding: 8px 10px;
+      font-family: "SF Mono","Consolas","Monaco",monospace;
+      font-size: 13px;
+      resize: vertical;
+    }
+
+    textarea.editor {
+      min-height: 150px;
+      resize: none;
+      overflow: auto;
+      white-space: pre;
+    }
+
+    .btn-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+      align-items: center;
+    }
+
+    pre {
+      background: var(--bg-alt);
+      border-radius: 10px;
+      border: 1px solid var(--border-soft);
+      padding: 10px;
+      max-height: 220px;
+      overflow: auto;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .message {
+      margin-top: 8px;
+      padding: 7px 10px;
+      border-radius: 10px;
+      font-size: 12px;
+      display: none;
+    }
+    .message.ok {
+      background: rgba(55,228,153,0.14);
+      color: #9fffe0;
+      border: 1px solid rgba(55,228,153,0.7);
+    }
+    .message.err {
+      background: rgba(255,75,107,0.14);
+      color: #ffd5dd;
+      border: 1px solid rgba(255,75,107,0.7);
+    }
+
+    .file-editor-container {
+      display: grid;
+      grid-template-columns: 220px minmax(0,1fr);
+      gap: 12px;
+    }
+    .file-tree {
+      background: var(--card-soft);
+      border-radius: 14px;
+      padding: 8px 8px;
+      max-height: 260px;
+      overflow: auto;
+      border: 1px solid var(--border-soft);
+    }
+    .file-item {
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .file-item:hover { background: #1b2140; }
+    .file-item.active { background: #252f5b; }
+    .file-item.folder { color: var(--accent2); font-weight: 600; }
+
+    .editor-path {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .mini-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+
+    .two-cols {
+      display: grid;
+      grid-template-columns: minmax(0,1fr) minmax(0,1fr);
+      gap: 16px;
+    }
+
+    @media (max-width: 900px) {
+      .container { flex-direction: column; }
+      .sidebar { width: 100%; flex-direction: row; align-items: flex-start; }
+      .app-list { max-height: 220px; }
+    }
+  </style>
+</head>
+<body>
+{% if apps %}
+  <span id="hyperdev-current-app"
+        data-current-app="{{ apps[0]['name'] }}"
+        style="display:none;"></span>
+{% endif %}
+
+
+<div class="container">
+
+  <!-- SIDEBAR ------------------------------------------------------ -->
+  <aside class="sidebar">
+    <div>
+      <div class="brand"><span>Workpent</span> HyperDev</div>
+      <div class="brand-sub">Apps cockpit · Git · ENV · Health · Snapshots</div>
+
+      <div class="server-chip" id="server-chip">
+        Node: loading…
+      </div>
+    </div>
+
+    <div class="app-list">
+      <h2>APPS ON THIS NODE</h2>
+      <div id="apps-list"></div>
+    </div>
+
+    <div class="sidebar-bottom">
+      <button class="btn btn-secondary" id="btn-open-ideas">AI App Wizard</button>
+    </div>
+  </aside>
+
+  <!-- MAIN CONTENT ------------------------------------------------- -->
+  <main class="content">
+    <div class="page-header">
+      <div>
+        <div class="page-title" id="current-app-title">No app selected</div>
+        <div class="page-sub" id="current-app-sub">
+          Select an app from the left to begin.
+        </div>
+      </div>
+
+      <div class="chip-bar">
+        <div class="chip" id="chip-utc">UTC: {{ utc_now }}</div>
+        <div class="chip" id="chip-mem">RAM: -</div>
+        <div class="chip" id="chip-disk">Disk: -</div>
+        <div class="chip" id="chip-status">Status: -</div>
+      </div>
+    </div>
+
+    <!-- IDEA WIZARD ------------------------------------------------ -->
+    <section class="card" id="idea-card" style="display:flex;flex-direction:column;gap:8px;">
+      <div class="card-header">
+        <div>
+          <div class="card-title">AI APP WIZARD · IDEA CAPTURE ONLY</div>
+          <div class="card-sub">Describe OTP SMS, payment webhook, WhatsApp bot, etc.
+            Stored only in ideas.md for future AI-assisted builds.</div>
+        </div>
+        <button class="btn" id="btn-idea-save">Save idea</button>
+      </div>
+      <textarea id="idea-text" rows="3"
+        placeholder="Describe your next API idea here. e.g. realtime traffic API for Lagos, OTP SMS gateway, WhatsApp bot…"></textarea>
+      <div class="message" id="idea-message"></div>
+    </section>
+
+    <!-- GRID ROW 1: Lifecycle + Git + Health ----------------------- -->
+    <section class="grid">
+
+      <!-- Lifecycle & Safety -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Lifecycle &amp; Safety</div>
+          <div class="card-sub" id="svc-name">Service: –</div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-secondary" id="btn-start">Start</button>
+          <button class="btn btn-danger" id="btn-stop">Stop</button>
+          <button class="btn" id="btn-restart">Restart</button>
+        </div>
+
+        <div class="btn-row" style="margin-top:12px;">
+          <button class="btn btn-secondary" id="btn-snapshot">Snapshot</button>
+          <button class="btn btn-secondary" id="btn-restore">Restore last</button>
+          <button class="btn btn-danger" id="btn-soft-delete">Soft delete</button>
+        </div>
+
+        <div class="btn-row" style="margin-top:12px;">
+          <button class="btn btn-secondary" id="btn-download">Download ZIP</button>
+        </div>
+
+        <div class="message" id="lifecycle-message"></div>
+      </div>
+
+      <!-- Git Cockpit -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Git Cockpit</div>
+          <div class="card-sub">branch · pending changes · push / pull</div>
+        </div>
+
+        <div class="mini-label">Current status:</div>
+        <pre id="git-status-output">(no output)</pre>
+
+        <div class="mini-label">Commit message:</div>
+        <input type="text" id="git-commit-message"
+               placeholder="e.g. Wire ENV editor + console" />
+
+        <div class="btn-row">
+          <button class="btn btn-secondary" id="btn-git-status">Refresh</button>
+          <button class="btn" id="btn-git-commit">Commit</button>
+          <button class="btn btn-secondary" id="btn-git-push">Push</button>
+          <button class="btn btn-secondary" id="btn-git-pull">Pull</button>
+        </div>
+
+        <div class="message" id="git-message"></div>
+      </div>
+
+      <!-- Health · Logs · Power tools -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Health · Logs · Power tools</div>
+          <div class="card-sub">/health · journalctl · nginx</div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-secondary" id="btn-health">Health check</button>
+          <button class="btn btn-secondary" id="btn-logs">Service logs</button>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-secondary" id="btn-nginx-test">Nginx test</button>
+          <button class="btn btn-secondary" id="btn-nginx-reload">Nginx reload</button>
+        </div>
+
+        <pre id="health-logs-output">(no output)</pre>
+      </div>
+
+    </section>
+
+    <!-- GRID ROW 2: ENV + Dependencies ----------------------------- -->
+    <section class="two-cols">
+
+      <!-- ENV editor -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">ENV Editor (.env)</div>
+          <div class="card-sub" id="env-path-display">Path: –</div>
+        </div>
+
+        <textarea id="env-editor" class="editor" spellcheck="false"></textarea>
+
+        <div class="btn-row">
+          <button class="btn" id="btn-env-save">Save ENV</button>
+          <button class="btn btn-secondary" id="btn-env-reload">Reload</button>
+        </div>
+
+        <div class="message" id="env-message"></div>
+      </div>
+
+      <!-- Dependencies / pip -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Dependencies (Pip)</div>
+          <div class="card-sub">venv · requirements.txt</div>
+        </div>
+
+        <div class="mini-label">Venv status / packages:</div>
+        <pre id="pip-output">(no output – maybe empty venv or pip error)</pre>
+
+        <div class="btn-row">
+          <button class="btn btn-secondary" id="btn-pip-list">List packages</button>
+          <button class="btn" id="btn-pip-install">Install from requirements.txt</button>
+        </div>
+
+        <div class="message" id="pip-message"></div>
+      </div>
+
+    </section>
+
+    <!-- File editor ------------------------------------------------- -->
+    <section class="card">
+      <div class="card-header">
+        <div class="card-title">File Editor</div>
+        <div class="card-sub">Inline browser + editor (safe for code tweaks)</div>
+      </div>
+
+      <div class="file-editor-container">
+        <div class="file-tree">
+          <div class="mini-label">Files in app root</div>
+          <div id="file-tree-list"></div>
+        </div>
+
+        <div>
+          <div class="mini-label">File content</div>
+          <textarea id="file-editor" class="editor" spellcheck="false"></textarea>
+          <div class="editor-path" id="editor-path">No file selected</div>
+
+          <div class="btn-row">
+            <button class="btn" id="btn-file-save">Save file</button>
+            <button class="btn btn-secondary" id="btn-file-reload">Reload file</button>
+          </div>
+
+          <div class="message" id="file-message"></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+
+  // ------------------------------------------------------------------
+  // Boot data from server
+  // ------------------------------------------------------------------
+  const APPS_INITIAL = JSON.parse('{{ apps_json | safe }}');
+  const SERVER_STATS_INITIAL = JSON.parse('{{ server_stats_json | safe }}');
+
+  let APPS = APPS_INITIAL || [];
+  let CURRENT_APP = null;      // name
+  let CURRENT_FILE = null;     // path within app
+
+  // Helpers ----------------------------------------------------------
+
+    // AI chat DOM elements
+    var aiMessageEl  = document.getElementById("ai-message");
+    var aiReplyEl    = document.getElementById("ai-reply");
+    var aiChatStatus = document.getElementById("ai-chat-status");
+    var aiSendBtn    = document.getElementById("ai-send-btn");
+
+  function msg(elId, text, ok = true) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    if (!text) {
+      el.style.display = "none";
+      return;
+    }
+    el.textContent = text;
+    el.className = "message " + (ok ? "ok" : "err");
+    el.style.display = "block";
+  }
+
+  function statusDotClass(status) {
+    if (status === "active") return "status-dot active";
+    if (status === "inactive") return "status-dot inactive";
+    return "status-dot";
+  }
+
+  function currentAppMeta() {
+    if (!CURRENT_APP) return null;
+    return APPS.find(a => a.name === CURRENT_APP) || null;
+  }
+
+  async function fetchJSON(url, options = {}) {
+    const res = await fetch(url, options);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = data.detail || JSON.stringify(data) || res.statusText;
+      throw new Error(detail);
+    }
+    return data;
+  }
+
+  // Sidebar + chips --------------------------------------------------
+  function renderServerStats(stats) {
+    const chip = document.getElementById("server-chip");
+    const memChip = document.getElementById("chip-mem");
+    const diskChip = document.getElementById("chip-disk");
+
+    if (chip && stats) {
+      chip.textContent =
+        `Node: ${stats.hostname} (${stats.ip}) · RAM ${stats.mem_used_mb}/${stats.mem_total_mb} MB · ` +
+        `Disk ${stats.disk_used_gb}/${stats.disk_total_gb} GB`;
+    }
+    if (memChip && stats) {
+      memChip.textContent = `RAM: ${stats.mem_used_mb}/${stats.mem_total_mb} MB`;
+    }
+    if (diskChip && stats) {
+      diskChip.textContent = `Disk: ${stats.disk_used_gb}/${stats.disk_total_gb} GB`;
+    }
+  }
+
+  function renderAppsList() {
+    const el = document.getElementById("apps-list");
+    if (!el) return;
+    el.innerHTML = "";
+    if (!APPS.length) {
+      el.textContent = "No apps found in /srv/workpent/apps.";
+      return;
+    }
+    APPS.forEach(app => {
+      const div = document.createElement("div");
+      div.className = "app-item" + (app.name === CURRENT_APP ? " active" : "");
+      div.dataset.app = app.name;
+      div.innerHTML = `
+        <div class="app-item-name">
+          <span class="${statusDotClass(app.status)}"></span>${app.name}
+        </div>
+        <div class="app-item-meta">
+          Port: ${app.port || "?"} · ${app.status}
+        </div>`;
+      div.addEventListener("click", () => selectApp(app.name));
+      el.appendChild(div);
+    });
+  }
+
+  async function refreshAppsFromServer() {
+    try {
+      const data = await fetchJSON("/api/console/apps");
+      APPS = data.apps || [];
+      renderAppsList();
+      updateStatusChip();
+    } catch (e) {
+      console.error("Failed to refresh apps", e);
+    }
+  }
+
+  function updateStatusChip() {
+    const chip = document.getElementById("chip-status");
+    const meta = currentAppMeta();
+    if (!chip || !meta) {
+      if (chip) chip.textContent = "Status: -";
+      return;
+    }
+    chip.textContent = `Status: ${meta.status || "unknown"}`;
+  }
+
+  function selectApp(name) {
+    if (CURRENT_APP === name) return;
+    CURRENT_APP = name;
+    renderAppsList();
+
+    const title = document.getElementById("current-app-title");
+    const sub = document.getElementById("current-app-sub");
+    const svc = document.getElementById("svc-name");
+
+    const meta = currentAppMeta();
+    if (title) title.textContent = name;
+    if (sub && meta) {
+      sub.textContent = `${meta.base_path} · Port ${meta.port || "?"}`;
+    }
+    if (svc && meta) {
+      svc.textContent = `Service: ${meta.service}`;
+    }
+
+    updateStatusChip();
+    loadEnv();
+    loadGitStatus();
+    loadFileTree(".");
+    msg("lifecycle-message", "");
+    msg("file-message", "");
+    msg("env-message", "");
+    msg("git-message", "");
+    msg("pip-message", "");
+    document.getElementById("file-editor").value = "";
+    document.getElementById("editor-path").textContent = "No file selected";
+  }
+
+  // Idea wizard ------------------------------------------------------
+  async function saveIdea() {
+    const textarea = document.getElementById("idea-text");
+    const text = (textarea.value || "").trim();
+    if (!text) {
+      msg("idea-message", "Type an idea first.", false);
+      return;
+    }
+    const form = new FormData();
+    form.append("idea", text);
+    form.append("app_name", CURRENT_APP || "general");
+    try {
+      const data = await fetchJSON("/api/console/ideas/save", { method: "POST", body: form });
+      msg("idea-message", data.message || "Idea saved.", true);
+      textarea.value = "";
+    } catch (e) {
+      msg("idea-message", "Failed to save idea: " + e.message, false);
+    }
+  }
+
+  // Lifecycle --------------------------------------------------------
+  async function doLifecycle(action) {
+    if (!CURRENT_APP) {
+      msg("lifecycle-message", "Select an app first.", false);
+      return;
+    }
+    msg("lifecycle-message", `Attempting to ${action} ${CURRENT_APP}…`, true);
+    try {
+      const data = await fetchJSON(`/api/console/apps/${encodeURIComponent(CURRENT_APP)}/${action}`, {
+        method: "POST"
+      });
+      msg("lifecycle-message", data.message || `${action} OK`, true);
+      await refreshAppsFromServer();
+    } catch (e) {
+      msg("lifecycle-message", `Lifecycle ${action} failed: ${e.message}`, false);
+    }
+  }
+
+  // Health / logs / nginx --------------------------------------------
+  async function runHealth() {
+    if (!CURRENT_APP) {
+      msg("lifecycle-message", "Select an app first.", false);
+      return;
+    }
+    const out = document.getElementById("health-logs-output");
+    out.textContent = "Running /health…";
+    try {
+      const data = await fetchJSON(`/api/console/apps/${encodeURIComponent(CURRENT_APP)}/health`);
+      out.textContent = JSON.stringify(data, null, 2);
+    } catch (e) {
+      out.textContent = "Health check failed: " + e.message;
+    }
+  }
+
+  async function loadLogs() {
+    if (!CURRENT_APP) {
+      msg("lifecycle-message", "Select an app first.", false);
+      return;
+    }
+    const out = document.getElementById("health-logs-output");
+    out.textContent = "Loading journalctl logs…";
+    try {
+      const res = await fetch(`/api/console/apps/${encodeURIComponent(CURRENT_APP)}/logs`);
+      const text = await res.text();
+      if (!res.ok) throw new Error(text);
+      out.textContent = text;
+    } catch (e) {
+      out.textContent = "Failed to load logs: " + e.message;
+    }
+  }
+
+  async function nginxTest() {
+    const out = document.getElementById("health-logs-output");
+    out.textContent = "Running nginx -t…";
+    try {
+      const data = await fetchJSON("/api/console/nginx/test", { method: "POST" });
+      out.textContent = data.output || JSON.stringify(data, null, 2);
+    } catch (e) {
+      out.textContent = "Nginx test failed: " + e.message;
+    }
+  }
+
+  async function nginxReload() {
+    const out = document.getElementById("health-logs-output");
+    out.textContent = "Reloading nginx…";
+    try {
+      const data = await fetchJSON("/api/console/nginx/reload", { method: "POST" });
+      out.textContent = data.message || JSON.stringify(data, null, 2);
+    } catch (e) {
+      out.textContent = "Nginx reload failed: " + e.message;
+    }
+  }
+
+  // ENV --------------------------------------------------------------
+  async function loadEnv() {
+    if (!CURRENT_APP) return;
+    const editor = document.getElementById("env-editor");
+    const pathEl = document.getElementById("env-path-display");
+    editor.value = "Loading .env…";
+    pathEl.textContent = "Path: (loading…)";
+    try {
+      const data = await fetchJSON(`/api/console/apps/${encodeURIComponent(CURRENT_APP)}/env`);
+      editor.value = data.content || "";
+      pathEl.textContent = "Path: " + (data.path || "(unknown)");
+    } catch (e) {
+      editor.value = "Failed to load .env: " + e.message;
+      pathEl.textContent = "Path: (error)";
+      msg("env-message", e.message, false);
+    }
+  }
+
+  async function saveEnv() {
+    if (!CURRENT_APP) {
+      msg("env-message", "Select an app first.", false);
+      return;
+    }
+    const editor = document.getElementById("env-editor");
+    const form = new FormData();
+    form.append("content", editor.value);
+    try {
+      const data = await fetchJSON(`/api/console/apps/${encodeURIComponent(CURRENT_APP)}/env`, {
+        method: "POST",
+        body: form
+      });
+      msg("env-message", data.message || "ENV saved.", true);
+      document.getElementById("env-path-display").textContent = "Path: " + (data.path || "(unknown)");
+    } catch (e) {
+      msg("env-message", "Failed to save ENV: " + e.message, false);
+    }
+  }
+
+  // Git --------------------------------------------------------------
+  async function loadGitStatus() {
+    if (!CURRENT_APP) return;
+    const out = document.getElementById("git-status-output");
+    out.textContent = "Loading git status…";
+    try {
+      const data = await fetchJSON(`/api/console/apps/${encodeURIComponent(CURRENT_APP)}/status/git`);
+      out.textContent = data.output || "(no output)";
+    } catch (e) {
+      out.textContent = "Git status failed: " + e.message;
+    }
+  }
+
+  async function gitCommit() {
+    if (!CURRENT_APP) {
+      msg("git-message", "Select an app first.", false);
+      return;
+    }
+    const msgInput = document.getElementById("git-commit-message");
+    const text = (msgInput.value || "").trim();
+    if (!text) {
+      msg("git-message", "Type a commit message.", false);
+      return;
+    }
+    const form = new FormData();
+    form.append("message", text);
+    try {
+      const data = await fetchJSON(`/api/console/apps/${encodeURIComponent(CURRENT_APP)}/git/commit`, {
+        method: "POST",
+        body: form
+      });
+      msg("git-message", "Commit OK.", true);
+      await loadGitStatus();
+    } catch (e) {
+      msg("git-message", "Commit failed: " + e.message, false);
+    }
+  }
+
+  async function gitPushPull(kind) {
+    if (!CURRENT_APP) {
+      msg("git-message", "Select an app first.", false);
+      return;
+    }
+    try {
+      const data = await fetchJSON(`/api/console/apps/${encodeURIComponent(CURRENT_APP)}/git/${kind}`, {
+        method: "POST"
+      });
+      msg("git-message", `${kind} OK.`, true);
+      await loadGitStatus();
+    } catch (e) {
+      msg("git-message", `${kind} failed: ` + e.message, false);
+    }
+  }
+
+  // Pip --------------------------------------------------------------
+  async function pipList() {
+    if (!CURRENT_APP) {
+      msg("pip-message", "Select an app first.", false);
+      return;
+    }
+    const out = document.getElementById("pip-output");
+    out.textContent = "Listing packages…";
+    try {
+      const data = await fetchJSON(`/api/console/apps/${encodeURIComponent(CURRENT_APP)}/pip/list`);
+      out.textContent = data.output || "(no output)";
+      msg("pip-message", data.ok ? "pip list OK" : "pip list had issues", data.ok);
+    } catch (e) {
+      out.textContent = "pip list failed: " + e.message;
+      msg("pip-message", "pip list failed: " + e.message, false);
+    }
+  }
+
+  async function pipInstallReqs() {
+    if (!CURRENT_APP) {
+      msg("pip-message", "Select an app first.", false);
+      return;
+    }
+    const out = document.getElementById("pip-output");
+    out.textContent = "Installing from requirements.txt…";
+    try {
+      const data = await fetchJSON(`/api/console/apps/${encodeURIComponent(CURRENT_APP)}/pip/install-reqs`, {
+        method: "POST"
+      });
+      out.textContent = data.output || "(no output)";
+      msg("pip-message", data.ok ? "Install OK" : "Install had issues", data.ok);
+    } catch (e) {
+      out.textContent = "Install failed: " + e.message;
+      msg("pip-message", "Install failed: " + e.message, false);
+    }
+  }
+
+  // Files ------------------------------------------------------------
+  async function loadFileTree(path = ".") {
+    if (!CURRENT_APP) return;
+    const list = document.getElementById("file-tree-list");
+    list.textContent = "Loading files…";
+    try {
+      const data = await fetchJSON(`/api/console/files/${encodeURIComponent(CURRENT_APP)}/ls?path=` + encodeURIComponent(path));
+      list.innerHTML = "";
+      data.items.forEach(item => {
+        const el = document.createElement("div");
+        el.className = "file-item " + item.type;
+        el.dataset.path = item.path;
+        el.textContent = (item.type === "folder" ? "📁 " : "📄 ") + item.name;
+        el.addEventListener("click", () => {
+          if (item.type === "folder") {
+            loadFileTree(item.path);
+          } else {
+            loadFileContent(item.path);
+          }
+        });
+        list.appendChild(el);
+      });
+    } catch (e) {
+      list.textContent = "Failed to load files: " + e.message;
+    }
+  }
+
+  async function loadFileContent(path) {
+    if (!CURRENT_APP) return;
+    CURRENT_FILE = path;
+    const editor = document.getElementById("file-editor");
+    const pathEl = document.getElementById("editor-path");
+    editor.value = "Loading " + path + "…";
+    pathEl.textContent = path;
+
+    document.querySelectorAll(".file-item").forEach(el => el.classList.remove("active"));
+    const active = document.querySelector(`.file-item[data-path="${path}"]`);
+    if (active) active.classList.add("active");
+
+    try {
+      const data = await fetchJSON(`/api/console/files/${encodeURIComponent(CURRENT_APP)}/read?path=` + encodeURIComponent(path));
+      editor.value = data.content || "";
+    } catch (e) {
+      editor.value = "Failed to load file: " + e.message;
+      msg("file-message", "Failed to load file: " + e.message, false);
+    }
+  }
+
+  async function saveFileContent() {
+    if (!CURRENT_APP || !CURRENT_FILE) {
+      msg("file-message", "Select a file first.", false);
+      return;
+    }
+    const editor = document.getElementById("file-editor");
+    const form = new FormData();
+    form.append("path", CURRENT_FILE);
+    form.append("content", editor.value);
+    try {
+      const data = await fetchJSON(`/api/console/files/${encodeURIComponent(CURRENT_APP)}/save`, {
+        method: "POST",
+        body: form
+      });
+      msg("file-message", data.message || "File saved.", true);
+    } catch (e) {
+      msg("file-message", "Save failed: " + e.message, false);
+    }
+  }
+
+  async function reloadCurrentFile() {
+    if (CURRENT_FILE) {
+      loadFileContent(CURRENT_FILE);
+    }
+  }
+
+  // Download ---------------------------------------------------------
+  function downloadZip() {
+    if (!CURRENT_APP) {
+      msg("lifecycle-message", "Select an app first.", false);
+      return;
+    }
+    window.location.href = `/api/console/apps/${encodeURIComponent(CURRENT_APP)}/download`;
+  }
+
+  // Init -------------------------------------------------------------
+  function bindEvents() {
+    document.getElementById("btn-idea-save").addEventListener("click", saveIdea);
+    document.getElementById("btn-open-ideas").addEventListener("click", () => {
+      document.getElementById("idea-text").focus();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+
+    document.getElementById("btn-start").addEventListener("click", () => doLifecycle("start"));
+    document.getElementById("btn-stop").addEventListener("click", () => doLifecycle("stop"));
+    document.getElementById("btn-restart").addEventListener("click", () => doLifecycle("restart"));
+    document.getElementById("btn-snapshot").addEventListener("click", () => doLifecycle("snapshot"));
+    document.getElementById("btn-restore").addEventListener("click", () => {
+      if (confirm("Restore last snapshot? Current app folder will be moved to deleted-apps.")) {
+        doLifecycle("restore");
+      }
+    });
+    document.getElementById("btn-soft-delete").addEventListener("click", () => {
+      if (confirm("Soft delete app? App folder will be moved to deleted-apps.")) {
+        doLifecycle("soft-delete");
+      }
+    });
+    document.getElementById("btn-download").addEventListener("click", downloadZip);
+
+    document.getElementById("btn-health").addEventListener("click", runHealth);
+    document.getElementById("btn-logs").addEventListener("click", loadLogs);
+    document.getElementById("btn-nginx-test").addEventListener("click", nginxTest);
+    document.getElementById("btn-nginx-reload").addEventListener("click", nginxReload);
+
+    document.getElementById("btn-env-save").addEventListener("click", saveEnv);
+    document.getElementById("btn-env-reload").addEventListener("click", loadEnv);
+
+    document.getElementById("btn-git-status").addEventListener("click", loadGitStatus);
+    document.getElementById("btn-git-commit").addEventListener("click", gitCommit);
+    document.getElementById("btn-git-push").addEventListener("click", () => gitPushPull("push"));
+    document.getElementById("btn-git-pull").addEventListener("click", () => gitPushPull("pull"));
+
+    document.getElementById("btn-pip-list").addEventListener("click", pipList);
+    document.getElementById("btn-pip-install").addEventListener("click", pipInstallReqs);
+
+    document.getElementById("btn-file-save").addEventListener("click", saveFileContent);
+    document.getElementById("btn-file-reload").addEventListener("click", reloadCurrentFile);
+  }
+
+  async function init() {
+    bindEvents();
+    renderServerStats(SERVER_STATS_INITIAL);
+    await refreshAppsFromServer();
+    if (APPS.length) {
+      selectApp(APPS[0].name);
+    }
+    // periodic stats refresh
+    setInterval(async () => {
+      try {
+        const stats = await fetchJSON("/api/console/server/stats");
+        renderServerStats(stats);
+      } catch (e) {
+        console.warn("Stats refresh failed", e);
+      }
+    }, 30000);
+  }
+
+  document.addEventListener("DOMContentLoaded", init);
+</script>
+
+<!-- -----------------------------------------------------------------
+     HyperDev: Live Preview + AI Agent panel
+     ----------------------------------------------------------------- -->
+<!-- Live Preview -->
+<div class="card">
+  <div class="card-header">
+    <div class="card-title">Live Preview</div>
+  </div>
+  <div class="card-body">
+    <div class="field-group">
+      <label for="preview-url" class="field-label">Preview URL</label>
+      <input
+        id="preview-url"
+        type="text"
+        class="field-input"
+        placeholder="http://161.97.88.196:9500/docs"
+      />
+    </div>
+
+    <div class="field-group">
+      <span class="field-label">Refresh mode</span>
+      <label class="field-radio">
+        <input type="radio" name="preview-mode" value="manual" checked />
+        Manual
+      </label>
+      <label class="field-radio">
+        <input type="radio" name="preview-mode" value="start" disabled />
+        On Start/Restart
+      </label>
+      <label class="field-radio">
+        <input type="radio" name="preview-mode" value="save" disabled />
+        On File Save
+      </label>
+    </div>
+
+    <button id="preview-refresh" class="btn btn-secondary">
+      Refresh now
+    </button>
+
+    <div class="preview-frame-wrap" style="margin-top: 12px;">
+      <iframe
+        id="preview-frame"
+        src="about:blank"
+        style="width: 100%; height: 320px; border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; background: #020617;"
+      ></iframe>
+    </div>
+  </div>
+</div>
+
+    <!-- AI Agent card -->
+    <section style="flex: 1 1 320px; border: 1px solid #ddd; border-radius: 8px; padding: 1rem;">
+      <h2 style="margin-top: 0; font-size: 1.1rem;">AI Agent (Mode A – User-guided)</h2>
+
+      <div style="margin-bottom:0.5rem; font-size:0.85rem; color:#555;">
+        Configure one primary agent for this app, then chat with it.
+      </div>
+
+      <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.75rem;">
+        <div style="flex:1 1 120px;">
+          <label for="ai-provider" style="display:block; font-size:0.8rem;">Provider</label>
+          <select id="ai-provider" style="width:100%; padding:0.25rem; font-size:0.85rem;">
+          <option value="groq">Groq (default)</option>
+          <option value="cerebras">Cerebras</option>
+          <option value="auto">Auto (choose by keys)</option>
+            <option value="openai">OpenAI</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="minimax">Minimax</option>
+            <option value="custom">Custom</option>
+          </select>
+        </div>
+        <div style="flex:1 1 120px;">
+          <label for="ai-model" style="display:block; font-size:0.8rem;">Model</label>
+          <input id="ai-model" type="text" style="width:100%; padding:0.25rem; font-size:0.85rem;"
+                 placeholder="gpt-4.1-mini">
+        </div>
+      </div>
+
+      <div style="margin-bottom:0.75rem;">
+        <label for="ai-api-url" style="display:block; font-size:0.8rem;">API URL</label>
+        <input id="ai-api-url" type="text" style="width:100%; padding:0.25rem; font-size:0.85rem;"
+               placeholder="https://api.openai.com/v1/chat/completions">
+      </div>
+
+      <div style="margin-bottom:0.75rem;">
+        <label for="ai-key-env" style="display:block; font-size:0.8rem;">API key env var</label>
+        <input id="ai-key-env" type="text" style="width:100%; padding:0.25rem; font-size:0.85rem;"
+               placeholder="OPENAI_API_KEY">
+      </div>
+
+      <div style="margin-bottom:0.75rem;">
+        <label for="ai-mode" style="display:block; font-size:0.8rem;">Agent mode</label>
+        <select id="ai-mode" style="width:100%; padding:0.25rem; font-size:0.85rem;">
+          <option value="A">A – User-guided (safe)</option>
+          <option value="B" disabled>B – Autonomous (later)</option>
+          <option value="C" disabled>C – Hybrid (later)</option>
+        </select>
+      </div>
+
+      <div style="margin-bottom:0.75rem;">
+        <button type="button" id="ai-save-config-btn"
+                style="padding:0.35rem 0.75rem; font-size:0.85rem; cursor:pointer;">
+          Save agent config
+        </button>
+        <span id="ai-config-status"
+              style="font-size:0.8rem; color:#666; margin-left:0.5rem;"></span>
+      </div>
+
+      <div style="margin-bottom:0.5rem;">
+        <label for="ai-message" style="display:block; font-size:0.8rem;">Ask the agent</label>
+        <textarea id="ai-message"
+                  style="width:100%; min-height:80px; padding:0.35rem; font-size:0.85rem;"
+                  placeholder="e.g. Explain the structure of this app, or propose a refactor for main.py"></textarea>
+      </div>
+
+      <div style="margin-bottom:0.75rem;">
+  <button type="button" id="ai-send-btn"
+          onclick="window.hyperdevSendAiChat && window.hyperdevSendAiChat()"
+          style="padding:0.35rem 0.75rem; font-size:0.85rem; cursor:pointer;">
+    Send to AI
+  </button>
+        <span id="ai-chat-status"
+              style="font-size:0.8rem; color:#666; margin-left:0.5rem;"></span>
+      </div>
+
+      <div>
+        <label for="ai-reply" style="display:block; font-size:0.8rem;">Agent reply</label>
+<textarea id="ai-reply" readonly
+    style="width:100%; min-height:120px; padding:0.5rem;
+           font-size:0.95rem; background:#050712; color:#f5f5f5;
+           white-space:pre-wrap;"></textarea>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+(function () {
+  function getCurrentAppName() {
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = params.get("app");
+    if (fromUrl) return fromUrl;
+
+    const el = document.querySelector("[data-current-app]");
+    if (el) return el.getAttribute("data-current-app");
+    return null;
+  }
+
+  const appName = getCurrentAppName();
+  if (!appName) {
+    console.warn("HyperDev: no app selected in URL (?app=...). AI + Preview panels disabled.");
+    const statusEl = document.getElementById("preview-status");
+    if (statusEl) {
+      statusEl.textContent = "No app selected (?app=...).";
+    }
+    return;
+  }
+
+  const previewUrlInput = document.getElementById("preview-url");
+  const previewModeRadios = document.querySelectorAll("input[name='preview-mode']");
+  const previewFrame = document.getElementById("preview-frame");
+  const previewStatus = document.getElementById("preview-status");
+  const previewRefreshBtn = document.getElementById("preview-refresh-btn");
+
+  const aiProvider = document.getElementById("ai-provider");
+  const aiModel = document.getElementById("ai-model");
+  const aiApiUrl = document.getElementById("ai-api-url");
+  const aiKeyEnv = document.getElementById("ai-key-env");
+  const aiMode = document.getElementById("ai-mode");
+  const aiConfigStatus = document.getElementById("ai-config-status");
+
+  const aiMessage = document.getElementById("ai-message");
+  const aiSendBtn = document.getElementById("ai-send-btn");
+  const aiChatStatus = document.getElementById("ai-chat-status");
+  const aiReply = document.getElementById("ai-reply");
+  const aiSaveConfigBtn = document.getElementById("ai-save-config-btn");
+
+  function httpJson(url, options) {
+    return fetch(url, Object.assign({
+      headers: { "Content-Type": "application/json" }
+    }, options || {})).then(function (resp) {
+      if (!resp.ok) {
+        return resp.text().then(function (txt) {
+          throw new Error("HTTP " + resp.status + ": " + txt.substring(0, 200));
+        });
+      }
+      return resp.json();
+    });
+  }
+
+  // -------------------------
+  // UI config (preview)
+  // -------------------------
+  function loadUiConfig() {
+    httpJson("/api/console/apps/" + encodeURIComponent(appName) + "/ui/config")
+      .then(function (data) {
+        if (!data || !data.ok) return;
+        var cfg = data.config || {};
+        if (previewUrlInput && cfg.preview_url) {
+          previewUrlInput.value = cfg.preview_url;
+          setPreviewSrc(cfg.preview_url);
+        }
+        if (cfg.preview_mode && previewModeRadios) {
+          previewModeRadios.forEach(function (r) {
+            r.checked = (r.value === cfg.preview_mode);
+          });
+        }
+      })
+      .catch(function (err) {
+        console.warn("HyperDev: failed to load UI config:", err);
+      });
+  }
+
+  function saveUiConfig() {
+    if (!previewUrlInput) return;
+    var url = previewUrlInput.value.trim() || null;
+    var mode = "manual";
+    previewModeRadios.forEach(function (r) {
+      if (r.checked) mode = r.value;
+    });
+
+    var payload = {
+      preview_url: url,
+      preview_mode: mode
+    };
+
+    httpJson("/api/console/apps/" + encodeURIComponent(appName) + "/ui/config", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }).then(function () {
+      if (previewStatus) {
+        previewStatus.textContent = "Saved UI config (" + mode + ")";
+        setTimeout(function () { previewStatus.textContent = ""; }, 2500);
+      }
+    }).catch(function (err) {
+      if (previewStatus) {
+        previewStatus.textContent = "Error saving UI config";
+      }
+      console.error(err);
+    });
+  }
+
+  function setPreviewSrc(url) {
+    if (!previewFrame || !url) return;
+    var src = url;
+    var sep = url.indexOf("?") === -1 ? "?" : "&";
+    src = url + sep + "_t=" + Date.now();
+    previewFrame.src = src;
+  }
+
+  function refreshPreview() {
+    if (!previewUrlInput) return;
+    var url = previewUrlInput.value.trim();
+    if (!url) {
+      if (previewStatus) previewStatus.textContent = "Set preview URL first.";
+      return;
+    }
+    setPreviewSrc(url);
+    if (previewStatus) {
+      previewStatus.textContent = "Preview refreshed.";
+      setTimeout(function () { previewStatus.textContent = ""; }, 2000);
+    }
+  }
+
+  if (previewRefreshBtn) {
+    previewRefreshBtn.addEventListener("click", function () {
+      refreshPreview();
+      saveUiConfig();
+    });
+  }
+  if (previewUrlInput) {
+    previewUrlInput.addEventListener("change", saveUiConfig);
+  }
+  previewModeRadios.forEach(function (r) {
+    r.addEventListener("change", saveUiConfig);
+  });
+
+  // -------------------------
+  // AI config
+  // -------------------------
+  function loadAiConfig() {
+    httpJson("/api/console/apps/" + encodeURIComponent(appName) + "/ai/config")
+      .then(function (data) {
+        if (!data || !data.ok) return;
+        var cfg = data.config || {};
+        var agents = cfg.agents || {};
+        var agentCfg = agents["primary"] || {};
+
+        if (aiProvider && agentCfg.provider) aiProvider.value = agentCfg.provider;
+        if (aiModel && agentCfg.model) aiModel.value = agentCfg.model;
+        if (aiApiUrl && agentCfg.api_url) aiApiUrl.value = agentCfg.api_url;
+        if (aiKeyEnv && agentCfg.api_key_env) aiKeyEnv.value = agentCfg.api_key_env;
+        if (aiMode && cfg.mode) aiMode.value = cfg.mode;
+      })
+      .catch(function (err) {
+        console.warn("HyperDev: failed to load AI config:", err);
+      });
+  }
+
+  function saveAiConfig() {
+    if (!aiProvider || !aiModel || !aiApiUrl || !aiKeyEnv || !aiMode) return;
+
+    var payload = {
+      active_agent: "primary",
+      mode: aiMode.value || "A",
+      agents: {
+        primary: {
+          provider: aiProvider.value || "openai",
+          model: aiModel.value || "gpt-4.1-mini",
+          api_url: aiApiUrl.value || "https://api.openai.com/v1/chat/completions",
+          api_key_env: aiKeyEnv.value || "OPENAI_API_KEY",
+          role: "code-mechanic"
+        }
+      }
+    };
+
+    httpJson("/api/console/apps/" + encodeURIComponent(appName) + "/ai/config", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }).then(function () {
+      if (aiConfigStatus) {
+        aiConfigStatus.textContent = "Saved.";
+        setTimeout(function () { aiConfigStatus.textContent = ""; }, 2000);
+      }
+    }).catch(function (err) {
+      if (aiConfigStatus) aiConfigStatus.textContent = "Error saving config.";
+      console.error(err);
+    });
+  }
+
+  if (aiSaveConfigBtn) {
+    aiSaveConfigBtn.addEventListener("click", saveAiConfig);
+  }
+
+// ------------------------------
+// AI chat
+// ------------------------------
+function sendAiChat() {
+    console.log("sendAiChat() called");
+
+    // Always re-read the DOM elements when the button is clicked
+    var aiMessageEl  = document.getElementById("ai-message");
+    var aiReplyEl    = document.getElementById("ai-reply");
+    var aiChatStatus = document.getElementById("ai-chat-status");
+
+    // Debug which ones are missing if any
+    if (!aiMessageEl || !aiReplyEl || !aiChatStatus) {
+        console.warn("AI chat elements missing", {
+            messageEl: !!aiMessageEl,
+            replyEl: !!aiReplyEl,
+            statusEl: !!aiChatStatus,
+        });
+        return;
+    }
+
+    // Use the app currently selected in the UI (?app=shortlink-api)
+    var appName = window.currentAppName || "shortlink-api";
+
+    var msg = (aiMessageEl.value || "").trim();
+    if (!msg) {
+        aiChatStatus.textContent = "Enter a prompt first.";
+        return;
+    }
+
+    aiChatStatus.textContent = "Thinking...";
+    aiReplyEl.value = "";
+
+    fetch("/api/console/apps/" + encodeURIComponent(appName) + "/ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            message: msg,
+            agent_name: "primary"
+        }),
+    })
+    .then(function (res) { return res.json(); })
+    .then(function (data) {
+    console.log("AI chat reply:", data);
+
+    if (!data || data.ok === false) {
+        aiChatStatus.textContent = "AI error.";
+        aiReplyEl.value = JSON.stringify(data || {}, null, 2);
+        return;
+    }
+
+    // Success: write reply into the textarea
+    aiChatStatus.textContent = "";
+    var replyText = data.reply || "";
+    aiReplyEl.value = replyText;
+    aiReplyEl.textContent = replyText;
+    console.log("Reply written into textarea:", replyText);
+})
+    .catch(function (err) {
+        console.error("sendAiChat error", err);
+        aiChatStatus.textContent = "Error";
+        aiReplyEl.value = String(err);
+    });
+}
+
+// Expose for button onclick & console testing
+window.hyperdevSendAiChat = sendAiChat;
+
+// Wire the button
+if (aiSendBtn) {
+    aiSendBtn.addEventListener("click", sendAiChat);
+}
+
+  // Initial load
+  loadUiConfig();
+  loadAiConfig();
+})();
+</script>
+<script>
+  (function () {
+    function previewRefresh() {
+      var input = document.getElementById('preview-url');
+      var frame = document.getElementById('preview-frame');
+      if (!input || !frame) return;
+
+      var url = (input.value || '').trim();
+      if (!url) {
+        frame.src = 'about:blank';
+      } else {
+        frame.src = url;
+      }
+    }
+
+    window.addEventListener('DOMContentLoaded', function () {
+      var btn = document.getElementById('preview-refresh');
+      if (btn) {
+        btn.addEventListener('click', function (e) {
+          e.preventDefault();
+          previewRefresh();
+        });
+      }
+    });
+  })();
+</script>
+
+
+</body>
+</html>
+

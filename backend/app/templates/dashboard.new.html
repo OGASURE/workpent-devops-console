@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Workpent HyperDev Console</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!-- Tailwind-lite / custom styles are assumed to already be loaded globally via your base layout.
+         If this is a standalone file, you can add your existing <style> block or CSS link here. -->
+
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script>
+        // Simple helper to open Preview in a robust way
+        function openPreview(appName, appPort, rawDomain) {
+            let domain = (rawDomain || "").trim();
+
+            // Strip inline comments and weird bits
+            if (domain.includes("#")) {
+                domain = domain.split("#")[0].trim();
+            }
+            if (domain.includes(" ")) {
+                domain = domain.split(" ")[0].trim();
+            }
+
+            const host = window.location.hostname;
+            let url;
+
+            if (domain) {
+                // If user already included http/https, use it; otherwise assume https
+                if (domain.startsWith("http://") || domain.startsWith("https://")) {
+                    url = domain;
+                } else {
+                    url = "https://" + domain;
+                }
+            } else if (appPort) {
+                url = "http://" + host + ":" + appPort;
+            } else {
+                alert("No DOMAIN_NAME or APP_PORT set in .env for " + appName);
+                return;
+            }
+
+            window.open(url, "_blank");
+        }
+    </script>
+
+    <style>
+        /* Keep the dark KD-style look; adapt to your taste */
+        body {
+            margin: 0;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: radial-gradient(circle at top left, #1b1440, #050712 55%, #020308 100%);
+            color: #f4f4ff;
+        }
+        .page-wrap {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 16px 12px 32px;
+        }
+        .header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+        .title-badge {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .title-dot {
+            width: 24px;
+            height: 24px;
+            border-radius: 999px;
+            background: radial-gradient(circle, #ff8a00, #ff2a7f);
+            box-shadow: 0 0 12px rgba(255, 138, 0, 0.6);
+        }
+        .title-text-main {
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+        .title-text-sub {
+            font-size: 0.72rem;
+            opacity: 0.7;
+        }
+        .header-stats {
+            display: flex;
+            gap: 20px;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+        .header-stat-pill {
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: rgba(13, 18, 36, 0.9);
+            border: 1px solid rgba(86, 95, 151, 0.6);
+        }
+        .header-stat-label {
+            opacity: 0.6;
+            margin-right: 6px;
+        }
+
+        .main-grid {
+            display: grid;
+            grid-template-columns: 310px minmax(0, 1fr);
+            gap: 16px;
+        }
+
+        .panel {
+            background: radial-gradient(circle at top, #15152a, #060714);
+            border-radius: 18px;
+            border: 1px solid rgba(80, 88, 161, 0.6);
+            padding: 14px 14px 16px;
+            box-shadow:
+                    0 12px 24px rgba(0, 0, 0, 0.6),
+                    inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+        }
+        .panel-title {
+            font-size: 0.75rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            opacity: 0.72;
+            margin-bottom: 8px;
+        }
+        .panel-sub {
+            font-size: 0.7rem;
+            opacity: 0.6;
+        }
+
+        .wizard-textarea {
+            width: 100%;
+            min-height: 120px;
+            border-radius: 12px;
+            border: 1px solid rgba(104, 115, 190, 0.7);
+            background: rgba(2, 4, 16, 0.9);
+            color: inherit;
+            font-size: 0.78rem;
+            padding: 8px 9px;
+            resize: vertical;
+        }
+
+        .btn {
+            border-radius: 999px;
+            padding: 6px 12px;
+            font-size: 0.72rem;
+            border: none;
+            cursor: pointer;
+            background: rgba(32, 38, 72, 0.9);
+            color: #f8f5ff;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: transform 0.08s ease, box-shadow 0.08s ease, background 0.08s ease;
+        }
+        .btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.6);
+            background: rgba(46, 55, 102, 0.9);
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #ff8a00, #ff2a7f);
+            color: #ffffff;
+            box-shadow: 0 0 14px rgba(255, 106, 160, 0.6);
+        }
+        .btn-primary:hover {
+            background: linear-gradient(135deg, #ffa433, #ff4790);
+        }
+        .btn-danger {
+            background: radial-gradient(circle, #ff3860, #b31245);
+        }
+        .btn-xs {
+            padding: 4px 8px;
+            font-size: 0.7rem;
+        }
+
+        .input {
+            width: 100%;
+            border-radius: 999px;
+            border: 1px solid rgba(86, 96, 163, 0.8);
+            background: rgba(5, 8, 24, 0.9);
+            color: inherit;
+            font-size: 0.78rem;
+            padding: 6px 10px;
+        }
+        .input::placeholder {
+            color: rgba(199, 205, 255, 0.45);
+        }
+
+        .projects-list {
+            margin-top: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            max-height: 310px;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
+        .project-pill {
+            border-radius: 12px;
+            padding: 7px 9px;
+            border: 1px solid rgba(80, 86, 155, 0.7);
+            background: rgba(3, 6, 20, 0.88);
+            font-size: 0.75rem;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .project-pill.active {
+            border-color: #ff8a00;
+            box-shadow: 0 0 10px rgba(255, 138, 0, 0.6);
+            background: radial-gradient(circle at top, rgba(255, 177, 66, 0.14), rgba(6, 7, 24, 0.96));
+        }
+        .project-name-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .project-name {
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+        .project-status {
+            font-size: 0.68rem;
+            padding: 2px 7px;
+            border-radius: 999px;
+            text-transform: uppercase;
+        }
+        .status-running {
+            background: rgba(27, 180, 105, 0.18);
+            color: #4fffb3;
+        }
+        .status-stopped {
+            background: rgba(219, 67, 79, 0.24);
+            color: #ff9a9f;
+        }
+        .project-meta {
+            font-size: 0.64rem;
+            opacity: 0.8;
+        }
+
+        .right-top-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.05fr);
+            gap: 14px;
+        }
+        .section-title-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 6px;
+        }
+        .badge-status {
+            padding: 3px 8px;
+            border-radius: 999px;
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            background: rgba(36, 46, 95, 0.9);
+        }
+
+        .lifecycle-buttons-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
+        .lifecycle-secondary-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .textarea-env {
+            width: 100%;
+            min-height: 150px;
+            border-radius: 12px;
+            border: 1px solid rgba(96, 108, 190, 0.9);
+            background: rgba(6, 8, 28, 0.96);
+            font-size: 0.76rem;
+            color: inherit;
+            padding: 8px 10px;
+            resize: vertical;
+            white-space: pre;
+            font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        }
+
+        .bottom-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.05fr);
+            gap: 12px;
+            margin-top: 12px;
+        }
+
+        .section-footer-text {
+            margin-top: 8px;
+            font-size: 0.68rem;
+            opacity: 0.65;
+        }
+
+        .logs-box,
+        .stats-box,
+        .git-output-box {
+            background: rgba(4, 6, 22, 0.96);
+            border-radius: 10px;
+            border: 1px solid rgba(71, 79, 141, 0.8);
+            padding: 7px 8px;
+            font-size: 0.7rem;
+            max-height: 180px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+
+        .console-footer {
+            margin-top: 18px;
+            font-size: 0.68rem;
+            opacity: 0.7;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+<div class="page-wrap">
+    <!-- Header -->
+    <div class="header-row">
+        <div class="title-badge">
+            <div class="title-dot"></div>
+            <div>
+                <div class="title-text-main">WORKPENT HYPERDEV CONSOLE</div>
+                <div class="title-text-sub">KD-style project browser · OTP / SMS / payment API factory · App empire launcher</div>
+            </div>
+        </div>
+        <div class="header-stats">
+            <div class="header-stat-pill">
+                <span class="header-stat-label">APPS:</span>
+                <span id="header-app-count">{{ apps|length if apps is defined else 0 }}</span>
+            </div>
+            <div class="header-stat-pill">
+                <span class="header-stat-label">CPU:</span>
+                <span>{{ system_stats.cpu }} load</span>
+            </div>
+            <div class="header-stat-pill">
+                <span class="header-stat-label">MEM:</span>
+                <span>{{ system_stats.memory }}</span>
+            </div>
+            <div class="header-stat-pill">
+                <span class="header-stat-label">DISK:</span>
+                <span>{{ system_stats.disk }}</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="main-grid">
+        <!-- LEFT COLUMN: Wizard + Create + Projects -->
+        <div class="panel">
+            <!-- AI App Wizard -->
+            <div>
+                <div class="panel-title">AI APP WIZARD <span style="opacity:0.6; font-weight:400;">(IDEA CAPTURE ONLY)</span></div>
+                <div class="panel-sub" style="margin-bottom:6px;">
+                    Describe your next API in plain English. OTP SMS, payment webhook, WhatsApp bot, etc.
+                </div>
+                <form id="idea-form" hx-post="/api/ideas" hx-target="#idea-status" hx-swap="innerHTML">
+                    <textarea name="text" class="wizard-textarea" placeholder="Example: I need a WhatsApp OTP service with Redis caching, rate limiting, admin dashboard and webhook callbacks...">{{ idea_text or "" }}</textarea>
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
+                        <button type="submit" class="btn btn-primary">Save idea</button>
+                        <div id="idea-status" class="panel-sub"></div>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Separator -->
+            <div style="height:16px;"></div>
+
+            <!-- Create New API -->
+            <div>
+                <div class="panel-title">CREATE NEW API (FASTAPI · SYSTEMD · NGINX)</div>
+                <form id="create-api-form" hx-post="/api/create-app" hx-target="#create-api-status" hx-swap="innerHTML">
+                    <label style="font-size:0.7rem; opacity:0.7;">API Name</label>
+                    <input class="input" name="app_name" placeholder="sms-api, payment-service" />
+
+                    <div style="height:6px;"></div>
+
+                    <label style="font-size:0.7rem; opacity:0.7;">Domain Name</label>
+                    <input class="input" name="domain_name" placeholder="api.workpent.com" />
+
+                    <div style="height:6px;"></div>
+
+                    <label style="font-size:0.7rem; opacity:0.7;">Port Number (internal gunicorn port)</label>
+                    <input class="input" name="app_port" placeholder="8100" />
+
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:8px;">
+                        <button type="submit" class="btn btn-primary">Create API Service</button>
+                        <button type="button" class="btn btn-xs" onclick="document.getElementById('create-api-form').reset();">Clear</button>
+                        <button type="button" class="btn btn-xs" onclick="document.querySelector('#create-api-form input[name=app_name]').value='sms-api';document.querySelector('#create-api-form input[name=domain_name]').value='api.workpent.com';document.querySelector('#create-api-form input[name=app_port]').value='8100';">Fill example</button>
+                    </div>
+                    <div id="create-api-status" class="panel-sub" style="margin-top:6px;"></div>
+                </form>
+            </div>
+
+            <!-- Separator -->
+            <div style="height:16px;"></div>
+
+            <!-- PROJECTS LIST -->
+            <div>
+                <div class="section-title-row">
+                    <div class="panel-title">PROJECTS</div>
+                    <div style="font-size:0.68rem; opacity:0.6;">{{ apps|length if apps is defined else 0 }} APPS</div>
+                </div>
+                <div class="projects-list" id="projects-list">
+                    {% for app in apps %}
+                    <div class="project-pill {% if app.name == active_app.name %}active{% endif %}"
+                         hx-get="/apps/{{ app.name }}/panel"
+                         hx-target="#app-detail"
+                         hx-swap="innerHTML"
+                         data-app-name="{{ app.name }}"
+                    >
+                        <div class="project-name-row">
+                            <div class="project-name">{{ app.name }}</div>
+                            <div class="project-status {% if app.status == 'RUNNING' %}status-running{% else %}status-stopped{% endif %}">
+                                {{ app.status }}
+                            </div>
+                        </div>
+                        <div class="project-meta">
+                            {{ app.domain or 'no domain/port' }} · port {{ app.port or '–' }}
+                        </div>
+                        <div class="project-meta">
+                            created {{ app.created_at }} · updated {{ app.updated_at }}
+                        </div>
+                    </div>
+                    {% else %}
+                    <div class="panel-sub">No apps yet. Use the form above to create one.</div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT COLUMN: App detail -->
+        <div id="app-detail">
+            {# This content is rendered server-side for active_app, but the entire block
+               will also be swappable via hx-get /apps/{name}/panel from the Projects list. #}
+
+            {% if active_app %}
+            <div class="right-top-grid">
+                <!-- LIFECYCLE + GIT + LOGS -->
+                <div class="panel">
+                    <div class="section-title-row">
+                        <div class="panel-title">LIFECYCLE · {{ active_app.name }}</div>
+                        <div class="badge-status">
+                            STATUS: {{ active_app.status }}
+                        </div>
+                    </div>
+                    <div class="panel-sub" style="margin-bottom:6px;">
+                        {{ active_app.path }}<br/>
+                        Created {{ active_app.created_at }} · Updated {{ active_app.updated_at }}
+                    </div>
+
+                    <!-- Primary lifecycle buttons -->
+                    <div class="lifecycle-buttons-row">
+                        <button class="btn btn-xs"
+                                hx-post="/apps/{{ active_app.name }}/start"
+                                hx-target="#lifecycle-status"
+                                hx-swap="innerHTML">
+                            Start
+                        </button>
+                        <button class="btn btn-xs"
+                                hx-post="/apps/{{ active_app.name }}/stop"
+                                hx-target="#lifecycle-status"
+                                hx-swap="innerHTML">
+                            Stop
+                        </button>
+                        <button class="btn btn-xs"
+                                hx-post="/apps/{{ active_app.name }}/restart"
+                                hx-target="#lifecycle-status"
+                                hx-swap="innerHTML">
+                            Restart
+                        </button>
+
+                        <button class="btn btn-xs"
+                                onclick="openPreview('{{ active_app.name }}', '{{ active_app.port }}', '{{ active_app.domain or '' }}')">
+                            Preview
+                        </button>
+
+                        <button class="btn btn-xs"
+                                hx-get="/apps/{{ active_app.name }}/health"
+                                hx-target="#lifecycle-health"
+                                hx-swap="innerHTML">
+                            Health
+                        </button>
+                        <button class="btn btn-xs"
+                                hx-get="/apps/{{ active_app.name }}/stats"
+                                hx-target="#lifecycle-stats"
+                                hx-swap="innerHTML">
+                            Stats
+                        </button>
+                    </div>
+
+                    <!-- Secondary / destructive actions -->
+                    <div class="lifecycle-secondary-row" style="margin-top:6px;">
+                        <button class="btn btn-xs"
+                                hx-post="/apps/{{ active_app.name }}/snapshot"
+                                hx-target="#lifecycle-status"
+                                hx-swap="innerHTML">
+                            Snapshot
+                        </button>
+                        <button class="btn btn-xs"
+                                hx-post="/apps/{{ active_app.name }}/restore-last"
+                                hx-target="#lifecycle-status"
+                                hx-swap="innerHTML">
+                            Restore last
+                        </button>
+                        <button class="btn btn-xs"
+                                hx-get="/apps/{{ active_app.name }}/download-zip">
+                            Download ZIP
+                        </button>
+                        <button class="btn btn-xs"
+                                hx-get="/apps/{{ active_app.name }}/files"
+                                hx-target="#file-browser-modal"
+                                hx-swap="innerHTML">
+                            Browse files
+                        </button>
+                        <button class="btn btn-xs btn-danger"
+                                hx-post="/apps/{{ active_app.name }}/soft-delete"
+                                hx-confirm="Soft delete {{ active_app.name }}? This moves it to deleted-apps but does not rm -rf."
+                                hx-target="#lifecycle-status"
+                                hx-swap="innerHTML">
+                            Soft delete
+                        </button>
+                    </div>
+
+                    <!-- Lifecyle feedback boxes -->
+                    <div id="lifecycle-status" class="logs-box" style="margin-top:8px;">
+                        Click any button above to see status.
+                    </div>
+
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px;">
+                        <div>
+                            <div style="font-size:0.7rem; opacity:0.7; margin-bottom:3px;">Health</div>
+                            <div id="lifecycle-health" class="stats-box">
+                                No health check yet.
+                            </div>
+                        </div>
+                        <div>
+                            <div style="font-size:0.7rem; opacity:0.7; margin-bottom:3px;">Stats (today)</div>
+                            <div id="lifecycle-stats" class="stats-box">
+                                No stats loaded yet.
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Logs -->
+                    <div style="margin-top:8px;">
+                        <div class="section-title-row" style="margin-bottom:4px;">
+                            <div style="font-size:0.72rem; opacity:0.7;">SERVICE LOGS</div>
+                            <button class="btn btn-xs"
+                                    hx-get="/apps/{{ active_app.name }}/logs"
+                                    hx-target="#logs-output"
+                                    hx-swap="innerHTML">
+                                Refresh logs
+                            </button>
+                        </div>
+                        <div id="logs-output" class="logs-box">No logs loaded yet.</div>
+                    </div>
+                </div>
+
+                <!-- ENV + DEPS + DB + CLONE / UPDATE -->
+                <div class="panel">
+                    <!-- ENV -->
+                    <div class="section-title-row">
+                        <div class="panel-title">ENVIRONMENT (.ENV)</div>
+                        <div style="font-size:0.7rem; opacity:0.7;">KEY / VALUE pairs</div>
+                    </div>
+                    <form id="env-form"
+                          hx-post="/apps/{{ active_app.name }}/env/save"
+                          hx-target="#env-status"
+                          hx-swap="innerHTML">
+                        <textarea class="textarea-env" name="env_text">{{ active_app.env_text }}</textarea>
+                        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:6px;">
+                            <button type="button" class="btn btn-xs"
+                                    hx-get="/apps/{{ active_app.name }}/env"
+                                    hx-target="#env-form textarea"
+                                    hx-swap="innerHTML">
+                                Reload
+                            </button>
+                            <button type="submit" class="btn btn-xs btn-primary">Save .env</button>
+                            <div id="env-status" class="panel-sub"></div>
+                        </div>
+                    </form>
+
+                    <!-- Dependencies -->
+                    <div style="margin-top:12px;">
+                        <div class="section-title-row">
+                            <div class="panel-title">DEPENDENCIES (PIP)</div>
+                            <div class="panel-sub">
+                                Venv: {{ active_app.venv_path }} · Python {{ active_app.python_version }}
+                            </div>
+                        </div>
+                        <div style="display:flex; gap:6px; margin-bottom:4px;">
+                            <button class="btn btn-xs"
+                                    hx-get="/apps/{{ active_app.name }}/deps/list"
+                                    hx-target="#deps-output"
+                                    hx-swap="innerHTML">
+                                List packages
+                            </button>
+                            <button class="btn btn-xs"
+                                    hx-get="/apps/{{ active_app.name }}/deps/outdated"
+                                    hx-target="#deps-output"
+                                    hx-swap="innerHTML">
+                                Outdated
+                            </button>
+                        </div>
+                        <div style="display:flex; gap:6px; margin-bottom:4px;">
+                            <input class="input" id="pip-package-input" placeholder="fastapi==0.115.0" />
+                            <button class="btn btn-xs"
+                                    onclick="htmx.ajax('POST','/apps/{{ active_app.name }}/deps/install',{target:'#deps-output',swap:'innerHTML',values:{package:document.getElementById('pip-package-input').value}}); return false;">
+                                pip install
+                            </button>
+                        </div>
+                        <button class="btn btn-xs"
+                                hx-post="/apps/{{ active_app.name }}/deps/update-from-reqs"
+                                hx-target="#deps-output"
+                                hx-swap="innerHTML">
+                            Update via requirements.txt
+                        </button>
+                        <div id="deps-output" class="logs-box" style="margin-top:6px;">
+                            No dependency output yet.
+                        </div>
+                    </div>
+
+                    <!-- Database -->
+                    <div style="margin-top:12px;">
+                        <div class="section-title-row">
+                            <div class="panel-title">DATABASE</div>
+                        </div>
+                        <div id="db-info" class="panel-sub">
+                            {% if active_app.db_status %}
+                                {{ active_app.db_status }}
+                            {% else %}
+                                SQLite file not found: app.db
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <!-- Clone / Update -->
+                    <div style="margin-top:12px;">
+                        <div class="panel-title">CLONE / UPDATE</div>
+                        <div style="font-size:0.7rem; opacity:0.7; margin-bottom:4px;">
+                            Clone app folder + .env, then use your existing deploy script to create systemd/nginx for the clone.
+                        </div>
+                        <div style="display:flex; gap:6px; margin-bottom:4px;">
+                            <input class="input" id="clone-name" placeholder="new-app-name" />
+                            <button class="btn btn-xs"
+                                    onclick="htmx.ajax('POST','/apps/{{ active_app.name }}/clone',{target:'#clone-status',swap:'innerHTML',values:{new_name:document.getElementById('clone-name').value}}); return false;">
+                                Clone app folder
+                            </button>
+                        </div>
+
+                        <div style="font-size:0.7rem; opacity:0.7; margin:6px 0 4px;">
+                            Upload new ZIP to update code (env / venv / .git / __pycache__ kept).
+                        </div>
+                        <form id="zip-update-form"
+                              hx-post="/apps/{{ active_app.name }}/update-from-zip"
+                              hx-target="#clone-status"
+                              hx-encoding="multipart/form-data"
+                              hx-swap="innerHTML">
+                            <input type="file" name="zip_file" />
+                            <button type="submit" class="btn btn-xs" style="margin-top:4px;">Upload ZIP &amp; update code</button>
+                        </form>
+                        <div id="clone-status" class="panel-sub" style="margin-top:6px;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- BOTTOM GRID: Git War Room + Console info -->
+            <div class="bottom-grid">
+                <!-- GIT War Room V1 -->
+                <div class="panel">
+                    <div class="section-title-row">
+                        <div class="panel-title">GIT (BASIC WAR ROOM)</div>
+                        <div class="panel-sub">Branch: {{ active_app.git_branch or 'unknown' }}</div>
+                    </div>
+
+                    <div style="font-size:0.7rem; opacity:0.7; margin-bottom:4px;">
+                        Commit / Push / Pull for <strong>{{ active_app.name }}</strong>.  
+                        (safe.directory already configured; repos live inside /srv/workpent/apps/*)
+                    </div>
+
+                    <div style="display:flex; gap:6px; margin-bottom:6px;">
+                        <button class="btn btn-xs"
+                                hx-get="/apps/{{ active_app.name }}/git/status"
+                                hx-target="#git-output"
+                                hx-swap="innerHTML">
+                            Status
+                        </button>
+                        <input class="input" id="git-commit-message" placeholder="Commit message (e.g. 'Improve shortlink stats endpoint')" />
+                        <button class="btn btn-xs"
+                                onclick="htmx.ajax('POST','/apps/{{ active_app.name }}/git/commit',{target:'#git-output',swap:'innerHTML',values:{message:document.getElementById('git-commit-message').value}}); return false;">
+                            Commit
+                        </button>
+                        <button class="btn btn-xs"
+                                hx-post="/apps/{{ active_app.name }}/git/push"
+                                hx-target="#git-output"
+                                hx-swap="innerHTML">
+                            Push
+                        </button>
+                        <button class="btn btn-xs"
+                                hx-post="/apps/{{ active_app.name }}/git/pull"
+                                hx-target="#git-output"
+                                hx-swap="innerHTML">
+                            Pull
+                        </button>
+                    </div>
+
+                    <div id="git-output" class="git-output-box">
+                        Click "Status" to load git info.
+                    </div>
+                </div>
+
+                <!-- Console Info -->
+                <div class="panel">
+                    <div class="panel-title">CONSOLE INFO</div>
+                    <div class="panel-sub">
+                        App base: <strong>/srv/workpent/apps</strong><br/>
+                        Snapshots: <strong>/srv/workpent/snapshots</strong><br/>
+                        Deleted: <strong>/srv/workpent/deleted-apps</strong><br/>
+                        Creator CLI: <strong>/usr/local/bin/workpent-create</strong><br/><br/>
+                        This console never edits systemd/nginx/deploy scripts – it only calls <code>systemctl</code> and uses your existing <code>workpent-create</code>. All EPIC 1 features live inside <strong>/srv/workpent/apps</strong>.
+                    </div>
+                    <div class="section-footer-text">
+                        Workpent HyperDev Console · KD Project Browser · {{ now }}
+                    </div>
+                </div>
+            </div>
+
+            {% else %}
+            <div class="panel">
+                <div class="panel-title">NO ACTIVE APP</div>
+                <div class="panel-sub">Use the form on the left to create your first API, or click an app in the Projects list.</div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- File browser modal target -->
+    <div id="file-browser-modal"></div>
+
+    <div class="console-footer">
+        Workpent HyperDev Console · App Empire Engine
+    </div>
+</div>
+</body>
+</html>
+

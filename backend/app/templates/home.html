@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Workpent DevOps Console</title>
+</head>
+<body>
+    <h1>🚀 Workpent DevOps Console</h1>
+
+    <a href="/create">
+        <button>Create New API</button>
+    </a>
+
+    <h2>Existing Apps</h2>
+    <ul>
+        {% for app in apps %}
+        <li>{{ app }}</li>
+        {% endfor %}
+    </ul>
+</body>
+</html>
+
