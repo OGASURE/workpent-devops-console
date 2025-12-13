@@ -21,6 +21,7 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from app.hyperdev_routes import router as hyperdev_router
 
 # -------------------------------------------------------------------
 # Paths / constants
@@ -40,6 +41,7 @@ for p in (APPS_BASE, STATIC_DIR, SNAPSHOT_BASE, DELETED_BASE, IDEAS_DIR):
     p.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Workpent HyperDev Console")
+app.include_router(hyperdev_router)
 
 @app.get("/ai-test/groq")
 async def ai_test_groq():
@@ -49,6 +51,9 @@ async def ai_test_groq():
 
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+@app.get("/create", response_class=HTMLResponse)
+async def create_page(request: Request):
+    return templates.TemplateResponse("create.html", {"request": request})
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # -------------------------------------------------------------------
