@@ -21,6 +21,7 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from app.git_routes import router as git_router
 from app.hyperdev_routes import router as hyperdev_router
 
 # -------------------------------------------------------------------
@@ -42,6 +43,7 @@ for p in (APPS_BASE, STATIC_DIR, SNAPSHOT_BASE, DELETED_BASE, IDEAS_DIR):
 
 app = FastAPI(title="Workpent HyperDev Console")
 app.include_router(hyperdev_router)
+app.include_router(git_router)
 
 @app.get("/ai-test/groq")
 async def ai_test_groq():

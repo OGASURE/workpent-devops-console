@@ -1,239 +1,125 @@
-import os
-import subprocess
-from dataclasses import dataclass
-from typing import List, Optional
-
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from pathlib import Path
+import subprocess
 
-APPS_BASE = os.environ.get("WORKPENT_APPS_BASE", "/srv/workpent/apps")
+router = APIRouter(prefix="/git", tags=["Git War Room"])
 
-router = APIRouter(prefix="/apps/{app_name}/git", tags=["git"])
-
-
-@dataclass
-class GitResult:
-    code: int
-    stdout: str
-    stderr: str
+APPS_BASE = Path("/srv/workpent/apps")
 
 
-def get_app_path(app_name: str) -> str:
-    app_path = os.path.join(APPS_BASE, app_name)
-    if not os.path.isdir(app_path):
-        raise HTTPException(status_code=404, detail=f"App '{app_name}' not found at {app_path}")
-    return app_path
+def _app_dir(app_name: str) -> Path:
+    p = APPS_BASE / app_name
+    if not p.exists() or not p.is_dir():
+        raise HTTPException(status_code=404, detail=f"App not found: {app_name}")
+    return p
 
 
-def run_git(app_path: str, args: List[str]) -> GitResult:
-    """
-    Run a git command in the given app_path and capture output.
-    """
-    try:
-        proc = subprocess.run(
-            ["git"] + args,
-            cwd=app_path,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="git is not installed on this server.")
-
-    return GitResult(code=proc.returncode, stdout=proc.stdout.strip(), stderr=proc.stderr.strip())
-
-
-def ensure_git_repo(app_path: str) -> None:
-    """
-    Make sure this folder is a git repo. We don't auto-init; we just validate.
-    """
-    res = run_git(app_path, ["rev-parse", "--is-inside-work-tree"])
-    if res.code != 0 or res.stdout.strip() != "true":
+def _run(cmd: list[str], cwd: Path) -> str:
+    p = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True)
+    out = (p.stdout or "").strip()
+    err = (p.stderr or "").strip()
+    if p.returncode != 0:
         raise HTTPException(
             status_code=400,
-            detail="This app is not a git repository yet. Run 'git init' and set a remote first.",
+            detail={"cmd": " ".join(cmd), "stdout": out, "stderr": err, "code": p.returncode},
         )
+    return out
 
 
-@router.get("/status")
-def git_status(app_name: str):
-    """
-    Basic git status for an app:
-    - current branch
-    - remote URL
-    - short status (changed files)
-    """
-    app_path = get_app_path(app_name)
-    ensure_git_repo(app_path)
-
-    branch = run_git(app_path, ["rev-parse", "--abbrev-ref", "HEAD"])
-    remote = run_git(app_path, ["remote", "-v"])
-    status_short = run_git(app_path, ["status", "--short"])
-
-    return {
-        "branch": branch.stdout or None,
-        "remote": remote.stdout or None,
-        "status": status_short.stdout or "",
-        "ok": branch.code == 0 and remote.code == 0 and status_short.code == 0,
-        "errors": {
-            "branch": branch.stderr,
-            "remote": remote.stderr,
-            "status": status_short.stderr,
-        },
-    }
+def _is_repo(cwd: Path) -> bool:
+    return (cwd / ".git").exists()
 
 
-@router.get("/commits")
-def git_commits(app_name: str, limit: int = 10):
-    """
-    Last N commits for the app.
-    """
-    app_path = get_app_path(app_name)
-    ensure_git_repo(app_path)
-
-    fmt = "%h|%an|%ad|%s"
-    res = run_git(app_path, ["log", f"-{limit}", f"--pretty=format:{fmt}"])
-    if res.code != 0:
-        raise HTTPException(status_code=500, detail=res.stderr or "Failed to read git log.")
-
-    commits = []
-    if res.stdout:
-        for line in res.stdout.splitlines():
-            parts = line.split("|", 3)
-            if len(parts) == 4:
-                commit_hash, author, date_str, msg = parts
-                commits.append(
-                    {
-                        "hash": commit_hash,
-                        "author": author,
-                        "date": date_str,
-                        "message": msg,
-                    }
-                )
-
-    return {"items": commits}
-
-
-class CommitRequestModel(dict):
-    """
-    Simple schema-like dict for request body parsing.
-    """
+class CommitReq(BaseModel):
     message: str
-    stage_all: bool = True
 
 
-@router.post("/commit")
-def git_commit(app_name: str, payload: CommitRequestModel):
-    """
-    Stage and commit changes.
-    """
-    app_path = get_app_path(app_name)
-    ensure_git_repo(app_path)
-
-    message = (payload.get("message") or "").strip()
-    stage_all = bool(payload.get("stage_all", True))
-
-    if not message:
-        raise HTTPException(status_code=400, detail="Commit message is required.")
-
-    if stage_all:
-        add_res = run_git(app_path, ["add", "."])
-        if add_res.code != 0:
-            raise HTTPException(status_code=500, detail=add_res.stderr or "git add failed.")
-
-    commit_res = run_git(app_path, ["commit", "-m", message])
-    if commit_res.code != 0:
-        # Common case: nothing to commit
-        if "nothing to commit" in commit_res.stderr.lower():
-            return {
-                "ok": False,
-                "message": "Nothing to commit (working tree clean).",
-                "stdout": commit_res.stdout,
-                "stderr": commit_res.stderr,
-            }
-        raise HTTPException(status_code=500, detail=commit_res.stderr or "git commit failed.")
-
-    return {
-        "ok": True,
-        "message": "Commit created.",
-        "stdout": commit_res.stdout,
-        "stderr": commit_res.stderr,
-    }
+class RemoteReq(BaseModel):
+    url: str  # e.g. git@github.com:OGASURE/repo.git
 
 
-class PushPullRequestModel(dict):
-    """
-    Simple schema-like request body for push/pull.
-    """
-    remote: Optional[str]
-    branch: Optional[str]
+class PushReq(BaseModel):
+    branch: str | None = None
 
 
-def get_current_branch(app_path: str) -> str:
-    res = run_git(app_path, ["rev-parse", "--abbrev-ref", "HEAD"])
-    if res.code != 0 or not res.stdout:
-        raise HTTPException(status_code=500, detail=res.stderr or "Failed to detect current branch.")
-    return res.stdout.strip()
+@router.get("/status/{app_name}")
+def status(app_name: str):
+    cwd = _app_dir(app_name)
+    if not _is_repo(cwd):
+        return {"app": app_name, "is_repo": False}
+
+    branch = _run(["git", "branch", "--show-current"], cwd) or "main"
+    porcelain = _run(["git", "status", "--porcelain"], cwd)
+    return {"app": app_name, "is_repo": True, "branch": branch, "porcelain": porcelain}
 
 
-@router.post("/push")
-def git_push(app_name: str, payload: PushPullRequestModel):
-    """
-    Push branch to remote (default: origin current-branch)
-    """
-    app_path = get_app_path(app_name)
-    ensure_git_repo(app_path)
+@router.get("/log/{app_name}")
+def log(app_name: str, n: int = 20):
+    cwd = _app_dir(app_name)
+    if not _is_repo(cwd):
+        raise HTTPException(status_code=400, detail="Not a git repo")
 
-    remote = (payload.get("remote") or "origin").strip()
-    branch = (payload.get("branch") or "").strip() or get_current_branch(app_path)
-
-    push_res = run_git(app_path, ["push", remote, branch])
-
-    if push_res.code != 0:
-        raise HTTPException(status_code=500, detail=push_res.stderr or "git push failed.")
-
-    return {"ok": True, "stdout": push_res.stdout, "stderr": push_res.stderr}
+    out = _run(["git", "log", f"--max-count={n}", "--oneline", "--decorate"], cwd)
+    items = [x for x in out.splitlines() if x.strip()]
+    return {"app": app_name, "items": items}
 
 
-@router.post("/pull")
-def git_pull(app_name: str, payload: PushPullRequestModel):
-    """
-    Pull branch from remote (default: origin current-branch)
-    """
-    app_path = get_app_path(app_name)
-    ensure_git_repo(app_path)
+@router.get("/branches/{app_name}")
+def branches(app_name: str):
+    cwd = _app_dir(app_name)
+    if not _is_repo(cwd):
+        raise HTTPException(status_code=400, detail="Not a git repo")
 
-    remote = (payload.get("remote") or "origin").strip()
-    branch = (payload.get("branch") or "").strip() or get_current_branch(app_path)
-
-    pull_res = run_git(app_path, ["pull", remote, branch])
-
-    if pull_res.code != 0:
-        raise HTTPException(status_code=500, detail=pull_res.stderr or "git pull failed.")
-
-    return {"ok": True, "stdout": pull_res.stdout, "stderr": pull_res.stderr}
+    out = _run(["git", "branch", "-a"], cwd)
+    lines = [x.strip() for x in out.splitlines() if x.strip()]
+    current = None
+    for ln in lines:
+        if ln.startswith("* "):
+            current = ln[2:].strip()
+            break
+    return {"app": app_name, "current": current, "branches": lines}
 
 
-@router.get("/diff-summary")
-def git_diff_summary(app_name: str):
-    """
-    Very small 'AI helper' stub: gives a human-readable summary of current diff.
+@router.post("/commit/{app_name}")
+def commit(app_name: str, body: CommitReq):
+    cwd = _app_dir(app_name)
+    if not _is_repo(cwd):
+        raise HTTPException(status_code=400, detail="Not a git repo")
 
-    Later we can feed this into a real LLM to propose commit messages.
-    """
-    app_path = get_app_path(app_name)
-    ensure_git_repo(app_path)
+    _run(["git", "add", "."], cwd)
+    out = _run(["git", "commit", "-m", body.message], cwd)
+    return {"app": app_name, "result": out}
 
-    diff_res = run_git(app_path, ["diff", "--stat"])
-    if diff_res.code != 0:
-        raise HTTPException(status_code=500, detail=diff_res.stderr or "git diff failed.")
 
-    summary_lines = []
-    if diff_res.stdout:
-        for line in diff_res.stdout.splitlines():
-            summary_lines.append(line.strip())
+@router.post("/set-remote/{app_name}")
+def set_remote(app_name: str, body: RemoteReq):
+    cwd = _app_dir(app_name)
+    if not _is_repo(cwd):
+        raise HTTPException(status_code=400, detail="Not a git repo")
 
-    return {
-        "ok": True,
-        "summary": summary_lines,
-    }
+    subprocess.run(["git", "remote", "remove", "origin"], cwd=str(cwd), capture_output=True, text=True)
+    _run(["git", "remote", "add", "origin", body.url], cwd)
+    return {"app": app_name, "origin": body.url}
+
+
+@router.post("/push/{app_name}")
+def push(app_name: str, body: PushReq = PushReq()):
+    cwd = _app_dir(app_name)
+    if not _is_repo(cwd):
+        raise HTTPException(status_code=400, detail="Not a git repo")
+
+    branch = body.branch or (_run(["git", "branch", "--show-current"], cwd) or "main")
+    _run(["git", "push", "-u", "origin", branch], cwd)
+    return {"app": app_name, "pushed": branch}
+
+
+@router.post("/pull/{app_name}")
+def pull(app_name: str):
+    cwd = _app_dir(app_name)
+    if not _is_repo(cwd):
+        raise HTTPException(status_code=400, detail="Not a git repo")
+
+    out = _run(["git", "pull", "--ff-only"], cwd)
+    return {"app": app_name, "result": out}
 
