@@ -1,26 +1,96 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Create API</title>
+  <meta charset="utf-8" />
+  <title>Generate App</title>
 </head>
+
 <body>
-    <h1>Create New API</h1>
+  <h2>Generate App</h2>
 
-    <form method="post">
-        <label>App Name:</label><br>
-        <input name="app_name" required><br><br>
+  <textarea
+    id="prompt"
+    placeholder="Describe what you want to build..."
+    style="width:100%;height:120px;"
+  ></textarea>
 
-        <label>App Port:</label><br>
-        <input name="app_port" required><br><br>
+  <br><br>
 
-        <label>Domain Name:</label><br>
-        <input name="domain_name" required><br><br>
+  <input id="app_name" placeholder="App name" style="width:100%;padding:8px;" />
 
-        <button type="submit">Create API</button>
-    </form>
+  <br><br>
 
-    <br>
-    <a href="/">⬅ Back to Home</a>
+  <select id="archetype" style="width:100%;padding:8px;">
+    <option value="chrome-extension">Chrome Extension</option>
+    <option value="saas-web">SaaS Web App</option>
+    <option value="api-product">API Product</option>
+  </select>
+
+  <br><br>
+
+  <button onclick="generate()" style="width:100%;padding:10px;cursor:pointer;">
+    Generate
+  </button>
+
+  <br><br>
+
+  <pre id="logs" style="background:#111;color:#0f0;padding:10px;min-height:120px;white-space:pre-wrap;"></pre>
+
+  <a href="/">← Back to Home</a>
+
+  <script>
+    async function generate() {
+      const prompt = document.getElementById("prompt").value.trim();
+      const app_name = document.getElementById("app_name").value.trim();
+      const archetype = document.getElementById("archetype").value;
+      const logBox = document.getElementById("logs");
+
+      if (!prompt || !app_name) {
+        alert("Please enter a prompt and an app name.");
+        return;
+      }
+
+      logBox.textContent = "Queuing job...\n";
+
+      const res = await fetch("/hyperdev/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, app_name, archetype })
+      });
+
+      if (!res.ok) {
+        const txt = await res.text();
+        logBox.textContent = "Request failed:\n" + txt;
+        return;
+      }
+
+      const data = await res.json();
+      if (!data.job_id) {
+        logBox.textContent = "No job_id returned:\n" + JSON.stringify(data, null, 2);
+        return;
+      }
+
+      const jobId = data.job_id;
+      logBox.textContent = "Starting...\n";
+
+      const poll = setInterval(async () => {
+        const r = await fetch(`/hyperdev/jobs/${jobId}`);
+        const j = await r.json();
+
+        if (j.error) {
+          logBox.textContent = "Job error:\n" + j.error;
+          clearInterval(poll);
+          return;
+        }
+
+        logBox.textContent = (j.logs || []).join("\n");
+
+        if (j.status === "done" || j.status === "error") {
+          clearInterval(poll);
+        }
+      }, 1000);
+    }
+  </script>
 </body>
 </html>
 
