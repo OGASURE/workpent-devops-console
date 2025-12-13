@@ -1,0 +1,189 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Git War Room — {{ app_name }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 0; padding: 16px; background: #0b1220; color: #e7eefc; }
+    a { color: #9dd1ff; text-decoration: none; }
+    .wrap { max-width: 980px; margin: 0 auto; }
+    .top { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    .card { background: #111b32; border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 14px; margin-top: 12px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: rgba(157,209,255,0.14); border: 1px solid rgba(157,209,255,0.22); }
+    input, textarea { width: 100%; box-sizing: border-box; padding: 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.14); background: #0b1220; color: #e7eefc; }
+    textarea { min-height: 90px; }
+    button { padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.18); background: #1c2a4d; color: #e7eefc; cursor: pointer; }
+    button:hover { filter: brightness(1.08); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    pre { background: #0b1220; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 12px; overflow: auto; white-space: pre-wrap; }
+    .small { opacity: 0.85; font-size: 13px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div>
+        <h2 style="margin: 0;">Git War Room</h2>
+        <div class="small">App: <span class="badge mono">{{ app_name }}</span></div>
+      </div>
+      <div class="row">
+        <a class="badge" href="/create">← Generate App</a>
+        <a class="badge" href="/">Home</a>
+        <button id="refreshBtn" onclick="refreshAll()">Refresh</button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h3 style="margin-top:0;">Status</h3>
+        <div class="row small">
+          <div>Repo: <span id="isRepo" class="badge mono">…</span></div>
+          <div>Branch: <span id="branch" class="badge mono">…</span></div>
+        </div>
+        <div style="margin-top:10px;">
+          <div class="small">Working tree (git status --porcelain):</div>
+          <pre id="statusBox" class="mono">Loading…</pre>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0;">Commit & Push</h3>
+
+        <div class="small">Commit message</div>
+        <input id="commitMsg" placeholder='e.g. "feat: add login screen"' />
+
+        <div class="row" style="margin-top:10px;">
+          <button onclick="doCommit()">Commit</button>
+          <button onclick="doPush()">Push</button>
+        </div>
+
+        <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08); margin:12px 0;" />
+
+        <div class="small">Set Remote (SSH recommended)</div>
+        <input id="remoteUrl" placeholder="git@github.com:OGASURE/repo.git" />
+        <div class="row" style="margin-top:10px;">
+          <button onclick="setRemote()">Set origin</button>
+        </div>
+
+        <div style="margin-top:12px;">
+          <div class="small">Action logs</div>
+          <pre id="actionLogs" class="mono">Ready.</pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0;">Recent Commits</h3>
+      <div class="small">Last <span id="logCount">10</span> commits:</div>
+      <pre id="logBox" class="mono">Loading…</pre>
+    </div>
+  </div>
+
+  <script>
+    const APP = "{{ app_name }}";
+
+    function setBusy(b) {
+      document.getElementById("refreshBtn").disabled = b;
+    }
+
+    function logAction(txt) {
+      const box = document.getElementById("actionLogs");
+      const ts = new Date().toLocaleTimeString();
+      box.textContent = `[${ts}] ${txt}\n` + box.textContent;
+    }
+
+    async function apiGet(url) {
+      const r = await fetch(url);
+      const t = await r.text();
+      let j;
+      try { j = JSON.parse(t); } catch { j = { raw: t }; }
+      if (!r.ok) throw new Error((j && j.detail) ? JSON.stringify(j.detail) : t);
+      return j;
+    }
+
+    async function apiPost(url, body) {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {})
+      });
+      const t = await r.text();
+      let j;
+      try { j = JSON.parse(t); } catch { j = { raw: t }; }
+      if (!r.ok) throw new Error((j && j.detail) ? JSON.stringify(j.detail) : t);
+      return j;
+    }
+
+    async function refreshStatus() {
+      const j = await apiGet(`/git/status/${APP}`);
+      document.getElementById("isRepo").textContent = j.is_repo ? "yes" : "no";
+      document.getElementById("branch").textContent = j.branch || "-";
+      document.getElementById("statusBox").textContent = (j.porcelain && j.porcelain.trim()) ? j.porcelain : "(clean)";
+    }
+
+    async function refreshLog(n=10) {
+      document.getElementById("logCount").textContent = String(n);
+      const j = await apiGet(`/git/log/${APP}?n=${n}`);
+      const items = (j.items || []);
+      document.getElementById("logBox").textContent = items.length ? items.join("\n") : "(no commits yet)";
+    }
+
+    async function refreshAll() {
+      try {
+        setBusy(true);
+        await refreshStatus();
+        await refreshLog(10);
+        logAction("Refreshed.");
+      } catch (e) {
+        logAction("Refresh failed: " + e.message);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function doCommit() {
+      const msg = document.getElementById("commitMsg").value.trim();
+      if (!msg) return alert("Enter a commit message first.");
+      try {
+        logAction("Committing…");
+        const j = await apiPost(`/git/commit/${APP}`, { message: msg });
+        logAction("Commit OK:\n" + (j.result || JSON.stringify(j)));
+        await refreshAll();
+      } catch (e) {
+        logAction("Commit failed: " + e.message);
+      }
+    }
+
+    async function doPush() {
+      try {
+        logAction("Pushing…");
+        const j = await apiPost(`/git/push/${APP}`, {});
+        logAction("Push OK:\n" + JSON.stringify(j));
+        await refreshAll();
+      } catch (e) {
+        logAction("Push failed: " + e.message);
+      }
+    }
+
+    async function setRemote() {
+      const url = document.getElementById("remoteUrl").value.trim();
+      if (!url) return alert("Paste the SSH remote URL first.");
+      try {
+        logAction("Setting origin…");
+        const j = await apiPost(`/git/set-remote/${APP}`, { url });
+        logAction("Origin set:\n" + JSON.stringify(j));
+      } catch (e) {
+        logAction("Set remote failed: " + e.message);
+      }
+    }
+
+    refreshAll();
+  </script>
+</body>
+</html>
+

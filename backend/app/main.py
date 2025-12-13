@@ -232,6 +232,10 @@ async def api_apps_list():
 async def api_server_stats():
     return get_server_stats()
 
+@app.get("/git-war-room/{app_name}", response_class=HTMLResponse)
+async def git_war_room_page(request: Request, app_name: str):
+    return templates.TemplateResponse("git_war_room.html", {"request": request, "app_name": app_name})
+
 # -------------------------------------------------------------------
 # AI Agent / Ask-AI endpoints  (Groq + Cerebras, pluggable)
 # -------------------------------------------------------------------
