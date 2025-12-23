@@ -2,6 +2,10 @@
 # Python cache
 __pycache__/
 *.pyc
+*.pyo
+*.swp
+*.save
+*.save.*
 
 # HyperDev runtime (job logs)
 hyperdev/jobs/
