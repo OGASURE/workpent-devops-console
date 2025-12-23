@@ -1,0 +1,15 @@
+[Unit]
+Description=Workpent __APP_SLUG__ (saas-web)
+After=network.target
+
+[Service]
+User=oga
+WorkingDirectory=/srv/workpent/apps/__APP_SLUG__
+ExecStart=/srv/workpent/apps/__APP_SLUG__/start.sh
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
