@@ -28,65 +28,195 @@
 
   <br><br>
 
+  <!-- API Key section (needed because middleware blocks /hyperdev/* without key) -->
+  <div style="margin-bottom:12px;">
+    <label style="display:block;font-weight:600;margin-bottom:6px;">API Key (WORKPENT_API_KEY)</label>
+    <input
+      id="api_key"
+      type="password"
+      placeholder="Paste your WORKPENT_API_KEY here"
+      style="width:100%;padding:8px;"
+    />
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button onclick="saveKey()" type="button" style="padding:10px;cursor:pointer;">
+        Save Key
+      </button>
+      <button onclick="clearKey()" type="button" style="padding:10px;cursor:pointer;">
+        Clear Key
+      </button>
+      <small style="align-self:center;color:#666;">
+        Stored in this browser (localStorage).
+      </small>
+    </div>
+  </div>
+
   <button onclick="generate()" style="width:100%;padding:10px;cursor:pointer;">
     Generate
   </button>
 
   <br><br>
 
-  <pre id="logs" style="background:#111;color:#0f0;padding:10px;min-height:120px;white-space:pre-wrap;"></pre>
+  <pre id="logs" style="background:#111;color:#0f0;padding:10px;min-height:120px;"></pre>
 
   <a href="/">← Back to Home</a>
 
   <script>
+    let pollTimer = null;
+
+    function getKey() {
+      return (localStorage.getItem("WORKPENT_API_KEY") || "").trim();
+    }
+
+    function setKey(k) {
+      localStorage.setItem("WORKPENT_API_KEY", (k || "").trim());
+    }
+
+    function saveKey() {
+      const el = document.getElementById("api_key");
+      setKey(el.value);
+      const logBox = document.getElementById("logs");
+      logBox.textContent = getKey() ? "API key saved.\n" : "API key cleared.\n";
+    }
+
+    function clearKey() {
+      setKey("");
+      const el = document.getElementById("api_key");
+      el.value = "";
+      const logBox = document.getElementById("logs");
+      logBox.textContent = "API key cleared.\n";
+    }
+
+    function authHeaders(extra = {}) {
+      const h = { ...extra };
+      const k = getKey();
+      if (k) h["X-API-Key"] = k;
+      return h;
+    }
+
+    // Pre-fill API key input from localStorage on load
+    (function init() {
+      const el = document.getElementById("api_key");
+      el.value = getKey();
+    })();
+
     async function generate() {
       const prompt = document.getElementById("prompt").value.trim();
       const app_name = document.getElementById("app_name").value.trim();
       const archetype = document.getElementById("archetype").value;
       const logBox = document.getElementById("logs");
 
+      // stop any previous poll loop
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+
       if (!prompt || !app_name) {
         alert("Please enter a prompt and an app name.");
         return;
       }
 
-      logBox.textContent = "Queuing job...\n";
-
-      const res = await fetch("/hyperdev/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, app_name, archetype })
-      });
-
-      if (!res.ok) {
-        const txt = await res.text();
-        logBox.textContent = "Request failed:\n" + txt;
+      const k = getKey();
+      if (!k) {
+        alert("API key is required. Paste WORKPENT_API_KEY and click Save Key.");
         return;
       }
 
-      const data = await res.json();
+      logBox.textContent = "Queuing job...\n";
+
+      let res;
+      try {
+        res = await fetch("/hyperdev/generate", {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ prompt, app_name, archetype })
+        });
+      } catch (e) {
+        logBox.textContent = "Request failed (network error):\n" + String(e);
+        return;
+      }
+
+      if (res.status === 401) {
+        logBox.textContent = "401 Unauthorized.\nYour API key is missing/invalid.\n";
+        return;
+      }
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        logBox.textContent = "Request failed (HTTP " + res.status + "):\n" + txt;
+        return;
+      }
+
+      const data = await res.json().catch(() => ({}));
       if (!data.job_id) {
         logBox.textContent = "No job_id returned:\n" + JSON.stringify(data, null, 2);
         return;
       }
 
       const jobId = data.job_id;
-      logBox.textContent = "Starting...\n";
+      logBox.textContent = "Job queued: " + jobId + "\nPolling...\n";
 
-      const poll = setInterval(async () => {
-        const r = await fetch(`/hyperdev/jobs/${jobId}`);
-        const j = await r.json();
-
-        if (j.error) {
-          logBox.textContent = "Job error:\n" + j.error;
-          clearInterval(poll);
+      pollTimer = setInterval(async () => {
+        let r;
+        try {
+          r = await fetch(`/hyperdev/jobs/${jobId}`, {
+            method: "GET",
+            headers: authHeaders()
+          });
+        } catch (e) {
+          logBox.textContent += "\nPolling error (network): " + String(e);
           return;
         }
 
-        logBox.textContent = (j.logs || []).join("\n");
+        if (r.status === 401) {
+          logBox.textContent += "\n\n401 Unauthorized while polling.\n";
+          clearInterval(pollTimer);
+          pollTimer = null;
+          return;
+        }
 
+        if (r.status === 404) {
+          logBox.textContent += "\n\n404 Job not found.\n";
+          clearInterval(pollTimer);
+          pollTimer = null;
+          return;
+        }
+
+        if (!r.ok) {
+          const t = await r.text().catch(() => "");
+          logBox.textContent += "\n\nPolling failed (HTTP " + r.status + "):\n" + t;
+          clearInterval(pollTimer);
+          pollTimer = null;
+          return;
+        }
+
+        const j = await r.json().catch(() => ({}));
+
+        // Prefer structured statuses/errors if present
+        if (j.detail) {
+          logBox.textContent += "\n\nError:\n" + j.detail;
+          clearInterval(pollTimer);
+          pollTimer = null;
+          return;
+        }
+
+        // Show logs if available
+        if (Array.isArray(j.logs)) {
+          logBox.textContent = j.logs.join("\n");
+        } else {
+          // fallback
+          logBox.textContent = JSON.stringify(j, null, 2);
+        }
+
+        // Stop on terminal state
         if (j.status === "done" || j.status === "error") {
-          clearInterval(poll);
+          clearInterval(pollTimer);
+          pollTimer = null;
+          if (j.status === "done") {
+            logBox.textContent += "\n\n✅ DONE";
+          } else {
+            logBox.textContent += "\n\n❌ ERROR";
+          }
         }
       }, 1000);
     }

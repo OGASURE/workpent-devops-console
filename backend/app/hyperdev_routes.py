@@ -1,222 +1,251 @@
-from fastapi import APIRouter, BackgroundTasks
-from pydantic import BaseModel
-from pathlib import Path
-from shutil import copytree
-import uuid
+# app/hyperdev_routes.py
+
+from __future__ import annotations
+
+import asyncio
 import time
-import json
-import subprocess
-from datetime import datetime
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional
 
-router = APIRouter(prefix="/hyperdev", tags=["HyperDev"])
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
-APPS_BASE = Path("/srv/workpent/apps")
-ARCHETYPES_BASE = Path("/srv/workpent/devops-console/hyperdev/archetypes")
-JOBS_DIR = Path("/srv/workpent/devops-console/hyperdev/jobs")
-JOBS_DIR.mkdir(parents=True, exist_ok=True)
+router = APIRouter()
 
-JOBS = {}  # in-memory mirror (jobs are persisted to disk)
+# -------------------------------------------------------------------
+# Config
+# -------------------------------------------------------------------
 
+APPS_BASE_DIR = Path("/srv/workpent/apps").resolve()
 
-class GenerateRequest(BaseModel):
-    prompt: str
-    archetype: str
-    app_name: str
-    description: str | None = None
+# How many lines we keep per job (avoid memory bloat)
+JOB_MAX_LINES = 800
 
-    # Optional Git remote + push
-    repo_url: str | None = None   # e.g. git@github.com:ORG/REPO.git
-    push: bool = False            # only used if repo_url is provided
-
-
-def _job_path(job_id: str) -> Path:
-    return JOBS_DIR / f"{job_id}.json"
+# File listing limits (avoid UI freeze)
+LIST_MAX_FILES = 800
+LIST_MAX_DEPTH = 8
 
 
-def _now_iso() -> str:
-    return datetime.utcnow().isoformat() + "Z"
+# -------------------------------------------------------------------
+# Utilities (SAFE path + file listing)
+# -------------------------------------------------------------------
+
+def safe_app_root(app_name: str) -> Path:
+    """
+    Resolve /srv/workpent/apps/<app_name> safely.
+    Prevents path traversal (e.g. ../../etc).
+    """
+    root = (APPS_BASE_DIR / app_name).resolve()
+    base = str(APPS_BASE_DIR) + "/"
+    if not str(root).startswith(base):
+        raise ValueError("Invalid app name/path traversal detected")
+    return root
 
 
-def _save_job(job_id: str):
-    """Persist a job snapshot to disk."""
-    data = JOBS.get(job_id)
-    if not data:
-        return
-    data["updated_at"] = _now_iso()
-    _job_path(job_id).write_text(json.dumps(data, indent=2), encoding="utf-8")
+def list_files(root: Path, max_files: int = LIST_MAX_FILES, max_depth: int = LIST_MAX_DEPTH) -> List[str]:
+    """
+    Return a sorted list of files relative to root.
+    Skips hidden folders and bulky dirs, and truncates for performance.
+    """
+    ignore_dirs = {
+        ".git",
+        "__pycache__",
+        ".venv",
+        "node_modules",
+        ".mypy_cache",
+        ".pytest_cache",
+        "dist",
+        "build",
+        ".ruff_cache",
+        ".idea",
+        ".vscode",
+    }
 
+    root = root.resolve()
+    base_depth = len(root.parts)
+    results: List[str] = []
 
-def _log(job_id: str, msg: str):
-    JOBS[job_id]["logs"].append(msg)
-    _save_job(job_id)
+    for p in root.rglob("*"):
+        if len(results) >= max_files:
+            results.append("... (truncated)")
+            break
 
+        # depth limit
+        if (len(p.parts) - base_depth) > max_depth:
+            continue
 
-def _run(cmd: list[str], cwd: Path, job_id: str | None = None):
-    """Run shell command safely and optionally log output."""
-    p = subprocess.run(
-        cmd,
-        cwd=str(cwd),
-        capture_output=True,
-        text=True
-    )
-    out = (p.stdout or "").strip()
-    err = (p.stderr or "").strip()
-    if job_id is not None:
-        if out:
-            _log(job_id, out)
-        if err:
-            _log(job_id, err)
-    if p.returncode != 0:
-        raise Exception(f"Command failed ({p.returncode}): {' '.join(cmd)}")
+        # ignore bulky dirs
+        if any(part in ignore_dirs for part in p.parts):
+            continue
 
+        # ignore hidden paths (but allow ".env" if you want—currently skipped)
+        # if any(part.startswith(".") for part in p.parts):
+        #     continue
 
-def _ensure_gitignore(app_dir: Path, archetype: str):
-    gi = app_dir / ".gitignore"
-    if gi.exists():
-        return
-
-    # simple defaults; we’ll expand per archetype later
-    lines = [
-        ".DS_Store",
-        "__pycache__/",
-        "*.pyc",
-        "node_modules/",
-        ".env",
-        ".venv/",
-        "dist/",
-        "build/",
-    ]
-    # Chrome extensions often produce zipped builds or temp files
-    if archetype == "chrome-extension":
-        lines += [
-            "*.zip",
-            "*.crx",
-            "*.pem",
-        ]
-
-    gi.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def _init_git_repo(app_dir: Path, job_id: str, repo_url: str | None, push: bool):
-    _log(job_id, "Initializing git repo…")
-
-    # init
-    _run(["git", "init"], cwd=app_dir, job_id=job_id)
-
-    # ensure user identity exists (some servers don't have global config)
-    # We set only if missing to avoid overriding your preferences.
-    p_name = subprocess.run(["git", "config", "user.name"], cwd=str(app_dir), capture_output=True, text=True)
-    p_email = subprocess.run(["git", "config", "user.email"], cwd=str(app_dir), capture_output=True, text=True)
-    if not (p_name.stdout or "").strip():
-        _run(["git", "config", "user.name", "Workpent HyperDev"], cwd=app_dir, job_id=job_id)
-    if not (p_email.stdout or "").strip():
-        _run(["git", "config", "user.email", "hyperdev@workpent.com"], cwd=app_dir, job_id=job_id)
-
-    # add + commit
-    _run(["git", "add", "."], cwd=app_dir, job_id=job_id)
-    _run(["git", "commit", "-m", "Initial scaffold by HyperDev"], cwd=app_dir, job_id=job_id)
-
-    # remote + push (optional)
-    if repo_url and push:
-        _log(job_id, f"Setting remote origin: {repo_url}")
-        _run(["git", "remote", "remove", "origin"], cwd=app_dir, job_id=None)  # ignore errors
-        subprocess.run(["git", "remote", "remove", "origin"], cwd=str(app_dir), capture_output=True, text=True)
-        _run(["git", "remote", "add", "origin", repo_url], cwd=app_dir, job_id=job_id)
-
-        # main branch
-        _run(["git", "branch", "-M", "main"], cwd=app_dir, job_id=job_id)
-
-        _log(job_id, "Pushing to origin/main…")
-        _run(["git", "push", "-u", "origin", "main"], cwd=app_dir, job_id=job_id)
-
-    _log(job_id, "Git setup complete ✅")
-
-
-def run_generation(job_id: str, data: GenerateRequest):
-    """Background generator (engine only, no UI here)."""
-    try:
-        JOBS[job_id]["status"] = "running"
-        _save_job(job_id)
-
-        _log(job_id, "Starting generation…")
-        time.sleep(0.5)
-
-        app_dir = APPS_BASE / data.app_name
-        tpl_dir = ARCHETYPES_BASE / data.archetype / "template"
-
-        if not tpl_dir.exists():
-            raise Exception(f"Missing archetype template: {tpl_dir}")
-
-        # create dir and prevent overwriting
-        app_dir.mkdir(parents=True, exist_ok=True)
-        if any(app_dir.iterdir()):
-            raise Exception(f"App directory is not empty: {app_dir}")
-
-        _log(job_id, f"Copying template: {data.archetype}")
-        copytree(tpl_dir, app_dir, dirs_exist_ok=True)
-
-        # replace placeholders
-        desc = data.description or data.prompt
-        for p in app_dir.rglob("*"):
-            if p.is_dir():
-                continue
-            if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".ico"}:
-                continue
+        if p.is_file():
             try:
-                txt = p.read_text(encoding="utf-8")
+                results.append(str(p.relative_to(root)))
             except Exception:
                 continue
-            txt = txt.replace("__APP_NAME__", data.app_name).replace("__APP_DESC__", desc)
-            p.write_text(txt, encoding="utf-8")
 
-        _log(job_id, "Template ready ✅")
+    return sorted(results)
 
-        # Git init + commit + optional push
-        _ensure_gitignore(app_dir, data.archetype)
-        _init_git_repo(app_dir, job_id, data.repo_url, data.push)
 
-        JOBS[job_id]["status"] = "done"
-        _log(job_id, f"App scaffold created at {app_dir}")
+# -------------------------------------------------------------------
+# Simple in-memory Job Engine
+# -------------------------------------------------------------------
+
+@dataclass
+class Job:
+    id: str
+    app_name: str
+    instruction: str
+    status: str = "running"  # running | done | error
+    started_at: float = field(default_factory=time.time)
+    finished_at: Optional[float] = None
+    lines: List[str] = field(default_factory=list)
+    cursor: int = 0  # last-read pointer for streaming
+    error: Optional[str] = None
+
+
+JOBS: Dict[str, Job] = {}
+JOBS_LOCK = asyncio.Lock()
+
+
+def _push(job: Job, line: str) -> None:
+    job.lines.append(line)
+    # trim
+    if len(job.lines) > JOB_MAX_LINES:
+        job.lines = job.lines[-JOB_MAX_LINES:]
+
+
+async def _run_job(job: Job) -> None:
+    """
+    Executes the HyperDev instruction in a SAFE, minimal way.
+    For now we support:
+      - list files / show files / file list
+    Everything else returns a safe stub "plan" so UI stays alive.
+    """
+    try:
+        _push(job, f"[hello] job {job.id} (running)")
+        _push(job, "• Job started")
+        await asyncio.sleep(0.1)
+
+        # Resolve app root
+        root = safe_app_root(job.app_name)
+        if not root.exists() or not root.is_dir():
+            raise FileNotFoundError(f"App folder not found: {root}")
+
+        _push(job, "• Received instruction")
+        await asyncio.sleep(0.1)
+        _push(job, "• Analyzing app context (safe stub)")
+        await asyncio.sleep(0.2)
+
+        instruction_lc = (job.instruction or "").strip().lower()
+
+        # ---- Feature: LIST FILES ----
+        if ("list files" in instruction_lc) or ("show files" in instruction_lc) or ("file list" in instruction_lc):
+            _push(job, "• Collecting file list…")
+            files = list_files(root)
+            _push(job, "• Done.")
+            _push(job, "")
+            _push(job, "Files in app:")
+            for f in files:
+                _push(job, f"- {f}")
+
+            _push(job, "")
+            _push(job, "[final] status=done")
+            job.status = "done"
+            job.finished_at = time.time()
+            return
+
+        # ---- Default safe behavior for everything else (for now) ----
+        _push(job, "• Drafting a build plan")
+        await asyncio.sleep(0.25)
+        _push(job, "• Done (no changes applied in Step 1.1)")
+        _push(job, "• Job finished")
+        _push(job, "")
+        _push(job, "[final] status=done")
+        job.status = "done"
+        job.finished_at = time.time()
 
     except Exception as e:
-        JOBS[job_id]["status"] = "error"
-        _log(job_id, str(e))
+        job.status = "error"
+        job.error = str(e)
+        job.finished_at = time.time()
+        _push(job, f"[final] status=error")
+        _push(job, f"Error: {job.error}")
 
 
-@router.post("/generate")
-async def generate_app(data: GenerateRequest, bg: BackgroundTasks):
-    job_id = str(uuid.uuid4())
+# -------------------------------------------------------------------
+# Routes
+# -------------------------------------------------------------------
 
-    JOBS[job_id] = {
-        "job_id": job_id,
-        "status": "queued",
-        "logs": ["Job queued"],
-        "app": data.app_name,
-        "archetype": data.archetype,
-        "created_at": _now_iso(),
-        "updated_at": _now_iso(),
-    }
-    _save_job(job_id)
+@router.post("/api/console/apps/{app_name}/hyperdev/run")
+async def hyperdev_run(request: Request, app_name: str):
+    """
+    Starts a HyperDev job.
+    Expected payload from UI can be flexible, but ideally:
+      { "instruction": "list files in this app", "mode": "...", "provider": "..." }
+    """
+    payload = {}
+    try:
+        payload = await request.json()
+    except Exception:
+        # allow empty / non-json
+        payload = {}
 
-    bg.add_task(run_generation, job_id, data)
-    return {"job_id": job_id}
+    instruction = (payload.get("instruction") or payload.get("message") or payload.get("prompt") or "").strip()
+    if not instruction:
+        instruction = "list files in this app"
+
+    job_id = uuid.uuid4().hex
+    job = Job(id=job_id, app_name=app_name, instruction=instruction)
+
+    async with JOBS_LOCK:
+        JOBS[job_id] = job
+
+    # run in background
+    asyncio.create_task(_run_job(job))
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "job_id": job_id,
+            "status": "running",
+            "app_name": app_name,
+        }
+    )
 
 
-@router.get("/jobs/{job_id}")
-async def job_status(job_id: str):
-    # 1) in-memory
-    if job_id in JOBS:
-        return JOBS[job_id]
+@router.get("/api/console/apps/{app_name}/hyperdev/stream/{job_id}")
+async def hyperdev_stream(app_name: str, job_id: str):
+    """
+    Streams job output incrementally.
+    UI can poll this endpoint.
+    Returns new lines since last poll.
+    """
+    async with JOBS_LOCK:
+        job = JOBS.get(job_id)
 
-    # 2) disk fallback
-    p = _job_path(job_id)
-    if p.exists():
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            JOBS[job_id] = data
-            return data
-        except Exception:
-            return {"error": "Job found but failed to read JSON"}
+    if not job or job.app_name != app_name:
+        return JSONResponse({"ok": False, "error": "job_not_found"}, status_code=404)
 
-    return {"error": "Job not found"}
+    # Return only "new" lines since last cursor.
+    new_lines = job.lines[job.cursor :]
+    job.cursor = len(job.lines)
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "job_id": job.id,
+            "status": job.status,
+            "running": job.status == "running",
+            "done": job.status in ("done", "error"),
+            "error": job.error,
+            "lines": new_lines,
+        }
+    )
 
