@@ -20,3 +20,4 @@ backend/.state/
 *.bak-*
 *.save
 *~
+*.bak_*
