@@ -1,0 +1,167 @@
+
+<!doctype html>
+<html>
+<head>
+<title>WPOTP Doctor</title>
+<style>
+body{font-family:sans-serif;background:#0f172a;color:#e5e7eb;margin:0}
+.actions button{margin:6px;padding:10px;border-radius:8px;font-weight:600}
+  #history{padding:12px}
+  #history .hhead{display:flex;gap:10px;align-items:center;justify-content:space-between;margin:6px 0 10px 0}
+  #hlist{border:1px solid #1f2937;border-radius:12px;overflow:hidden}
+  .hrow{display:flex;gap:10px;justify-content:space-between;padding:10px 12px;border-top:1px solid #1f2937;cursor:pointer}
+  .hrow:first-child{border-top:0}
+  .hmeta{opacity:.75;font-size:12px}
+  .hbadge{font-size:12px;padding:2px 8px;border-radius:999px;border:1px solid #374151}
+  .hbadge.ok{color:#22c55e;border-color:#14532d}
+  .hbadge.err{color:#ef4444;border-color:#7f1d1d}
+.primary{background:#2563eb;color:white}
+.success{background:#16a34a;color:white}
+.danger{background:#dc2626;color:white}
+.neutral{background:#334155;color:white}
+#panel{position:fixed;top:0;right:-45%;width:45%;height:100%;background:#020617;
+box-shadow:-6px 0 20px rgba(0,0,0,.6);transition:.35s;padding:16px;overflow:auto}
+#panel.open{right:0}
+pre{white-space:pre-wrap;font-size:12px}
+.ok{color:#22c55e} .err{color:#ef4444}
+</style>
+</head>
+<body>
+<h2 style="padding:12px">WPOTP Doctor</h2>
+<div class="actions" id="actions"></div>
+
+  <div id="history">
+   <div class="hhead">
+    <h3 style="margin:0">Recent Events</h3>
+    <button class="neutral" style="padding:6px 10px;border-radius:8px;font-weight:600" onclick="loadHistory()">Refresh</button>
+   </div>
+   <div id="hlist"></div>
+  </div>
+
+<div id="panel">
+<button onclick="closeP()">✕ Close</button>
+<h3 id="ptitle"></h3>
+<pre id="pout"></pre>
+</div>
+
+<script>
+const panel=d=>document.getElementById(d)
+function openP(t){panel("panel").classList.add("open");panel("ptitle").innerText=t}
+function closeP(){panel("panel").classList.remove("open")}
+
+async function loadActions(){
+ let a=await fetch("api/actions").then(r=>r.json())
+ let c=panel("actions")
+ for(let k in a){
+  let b=document.createElement("button")
+  b.textContent=a[k].label
+  b.className=a[k].kind
+  b.onclick=()=>run(k)
+  c.appendChild(b)
+ }
+}
+
+let currentAid = null
+
+async function run(id){
+ currentAid = id
+ openP("Running "+id+" …")
+ panel("pout").textContent = ""
+ await fetch("api/action/"+id,{method:"POST"})
+ await waitForDone(id, 8000)
+}
+
+async function waitForDone(id, timeoutMs){
+ const t0 = Date.now()
+ while(Date.now() - t0 < timeoutMs){
+  let ev=(await fetch("api/events").then(r=>r.json())).events
+  for(let idx=ev.length-1; idx>=0; idx--){
+   let e = ev[idx]
+   if(e && e.action=="ui_action_done" && e.action_id==id){
+    renderDone(e)
+    return
+   }
+  }
+
+  function esc(s){ return (s||"").toString() }
+
+  function openEvent(e){
+   // Open panel and render the selected event deterministically
+   openP(e.action_id + (e.rc !== undefined ? (" (rc="+e.rc+")") : ""))
+   if(e.action=="ui_action_done") renderDone(e)
+   else panel("pout").textContent = JSON.stringify(e, null, 2)
+  }
+
+  function renderHistoryRow(e){
+   let row = document.createElement("div")
+   row.className = "hrow"
+   let left = document.createElement("div")
+   let right = document.createElement("div")
+   right.className = "hmeta"
+
+   let ts = (e.ts||"").replace("T"," ").replace("Z","")
+   let title = document.createElement("div")
+   title.textContent = (e.action_id||"?") + " — " + (e.action||"?")
+   let meta = document.createElement("div")
+   meta.className = "hmeta"
+   meta.textContent = ts
+
+   left.appendChild(title)
+   left.appendChild(meta)
+
+   if(e.action=="ui_action_done"){
+    let b = document.createElement("span")
+    b.className = "hbadge " + (e.rc==0 ? "ok" : "err")
+    b.textContent = "rc=" + e.rc
+    right.appendChild(b)
+   } else {
+    let b = document.createElement("span")
+    b.className = "hbadge"
+    b.textContent = "start"
+    right.appendChild(b)
+   }
+
+   row.appendChild(left)
+   row.appendChild(right)
+   row.onclick = ()=>openEvent(e)
+   return row
+  }
+
+  async function loadHistory(){
+   let box = panel("hlist")
+   if(!box) return
+   let ev = (await fetch("api/events?limit=80").then(r=>r.json())).events || []
+   // show newest first
+   ev = ev.slice().reverse()
+
+   box.innerHTML = ""
+   // only show ui_action_start/done for sanity
+   let filtered = ev.filter(e=>e && (e.action=="ui_action_start" || e.action=="ui_action_done"))
+   filtered.slice(0, 30).forEach(e=>box.appendChild(renderHistoryRow(e)))
+  }
+  await new Promise(r=>setTimeout(r,250))
+ }
+ panel("ptitle").innerText = id + " (waiting for completion...)"
+}
+
+function renderDone(last){
+ panel("ptitle").innerText = last.action_id + " (rc=" + last.rc + ")"
+
+ // Safe text rendering (no innerHTML)
+ let out = ""
+ if(last.stdout) out += last.stdout
+ if(last.result) out += (out ? "\n" : "") + JSON.stringify(last.result, null, 2)
+
+ panel("pout").textContent = out || ""
+
+ if(last.stderr){
+  panel("pout").textContent += (panel("pout").textContent ? "\n\n" : "") + last.stderr
+ }
+}
+
+loadActions()
+  loadHistory()
+  setInterval(loadHistory,2000)
+</script>
+</body>
+</html>

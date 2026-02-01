@@ -2,8 +2,10 @@ from __future__ import annotations
 from app import registry
 from app import reconcile
 
+from app import idea_sessions
 import json
 import os
+import time
 import shutil
 import socket
 import subprocess
@@ -410,6 +412,15 @@ async def api_systemd_sweep_orphans():
 
 
 # -------------------------------------------------------------------
+# Doctor UI (Phase 2)
+# -------------------------------------------------------------------
+
+@app.api_route("/doctor", methods=["GET","HEAD"])
+async def doctor_page(request: Request):
+    return templates.TemplateResponse("doctor.html", {"request": request})
+
+
+# -------------------------------------------------------------------
 # Reconciler (Phase 1)
 # -------------------------------------------------------------------
 
@@ -449,6 +460,63 @@ async def api_apps_list():
 @app.get("/api/console/server/stats", response_class=JSONResponse)
 async def api_server_stats():
     return get_server_stats()
+
+
+
+# -------------------------------------------------------------------
+# Doctor APIs (Phase 2 UI plumbing)
+# NOTE: Doctor UI calls these as relative paths under /app/, nginx rewrites to /api/*
+# -------------------------------------------------------------------
+
+_DOCTOR_EVENTS: List[Dict[str, Any]] = []
+_DOCTOR_ACTIONS: List[Dict[str, Any]] = [
+    {"id": "reconcile_run", "label": "Run reconcile now"},
+]
+
+def _doctor_log(event: str, meta: Dict[str, Any] | None = None) -> None:
+    _DOCTOR_EVENTS.append({
+        "id": uuid.uuid4().hex,
+        "ts": int(time.time()),
+        "event": event,
+        "meta": meta or {},
+    })
+    # keep last 300
+    if len(_DOCTOR_EVENTS) > 300:
+        del _DOCTOR_EVENTS[:-300]
+
+
+@app.get("/api/actions", response_class=JSONResponse)
+async def api_actions():
+    return {"actions": _DOCTOR_ACTIONS}
+
+
+@app.post("/api/action/{action_id}", response_class=JSONResponse)
+async def api_action_run(action_id: str):
+    # Minimal v1: only reconcile_run is supported
+    if action_id != "reconcile_run":
+        _doctor_log("action_unknown", {"action_id": action_id})
+        return JSONResponse({"detail": "unknown action"}, status_code=404)
+
+    trace_id = uuid.uuid4().hex
+    _doctor_log("action_start", {"action_id": action_id, "trace_id": trace_id})
+
+    rep = reconcile.build_report()
+    rep["trace_id"] = trace_id
+    reconcile.apply_observed(rep)
+
+    _doctor_log("action_done", {
+        "action_id": action_id,
+        "trace_id": trace_id,
+        "counts": rep.get("counts") or {},
+    })
+
+    return {"ok": True, "action_id": action_id, "trace_id": trace_id, "result": rep}
+
+
+@app.get("/api/events", response_class=JSONResponse)
+async def api_events(limit: int = 80):
+    limit = max(1, min(int(limit or 80), 500))
+    return {"events": _DOCTOR_EVENTS[-limit:]}
 
 
 # -------------------------------------------------------------------
@@ -985,6 +1053,54 @@ async def api_download_app(
         raise HTTPException(status_code=500, detail="Zip build failed")
 
     return FileResponse(path=str(zip_path), filename=zip_name, media_type="application/zip")
+
+
+
+# -------------------------------------------------------------------
+# Idea Sessions (Phase 2)
+# -------------------------------------------------------------------
+
+async def _handle_idea_session_message(session_id: str, payload: Dict[str, Any]):
+    content = (payload.get("content") or "").strip()
+    if not content:
+        return JSONResponse({"detail": "content is required"}, status_code=400)
+
+    try:
+        session = idea_sessions.add_user_reply(session_id, content)
+        idea_sessions.save_session(session)
+        return JSONResponse(session)
+    except KeyError:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+
+
+@app.post("/api/idea-sessions", response_class=JSONResponse)
+async def create_idea_session(payload: Dict[str, Any]):
+    idea = (payload.get("idea") or "").strip()
+    if not idea:
+        return JSONResponse({"detail": "idea is required"}, status_code=400)
+
+    session = idea_sessions.create_session(idea)
+    idea_sessions.save_session(session)
+    return JSONResponse(session)
+
+
+@app.get("/api/idea-sessions/{session_id}", response_class=JSONResponse)
+async def get_idea_session(session_id: str):
+    session = idea_sessions.get_session(session_id)
+    if not session:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    return JSONResponse(session)
+
+
+@app.post("/api/idea-sessions/{session_id}/message", response_class=JSONResponse)
+async def post_idea_session_message(session_id: str, payload: Dict[str, Any]):
+    return await _handle_idea_session_message(session_id, payload)
+
+
+# Compatibility alias (do NOT add logic here)
+@app.post("/api/idea-sessions/{session_id}/reply", response_class=JSONResponse)
+async def post_idea_session_reply(session_id: str, payload: Dict[str, Any]):
+    return await _handle_idea_session_message(session_id, payload)
 
 
 # -------------------------------------------------------------------
