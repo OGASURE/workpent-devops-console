@@ -14,3 +14,9 @@ hyperdev/jobs/
 backend/.state/
 *.sqlite3
 *.log
+
+# Local editor backups / ad-hoc backups
+*.bak
+*.bak-*
+*.save
+*~
