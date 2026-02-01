@@ -1,167 +1,308 @@
-
 <!doctype html>
-<html>
+<html lang="en">
 <head>
-<title>WPOTP Doctor</title>
-<style>
-body{font-family:sans-serif;background:#0f172a;color:#e5e7eb;margin:0}
-.actions button{margin:6px;padding:10px;border-radius:8px;font-weight:600}
-  #history{padding:12px}
-  #history .hhead{display:flex;gap:10px;align-items:center;justify-content:space-between;margin:6px 0 10px 0}
-  #hlist{border:1px solid #1f2937;border-radius:12px;overflow:hidden}
-  .hrow{display:flex;gap:10px;justify-content:space-between;padding:10px 12px;border-top:1px solid #1f2937;cursor:pointer}
-  .hrow:first-child{border-top:0}
-  .hmeta{opacity:.75;font-size:12px}
-  .hbadge{font-size:12px;padding:2px 8px;border-radius:999px;border:1px solid #374151}
-  .hbadge.ok{color:#22c55e;border-color:#14532d}
-  .hbadge.err{color:#ef4444;border-color:#7f1d1d}
-.primary{background:#2563eb;color:white}
-.success{background:#16a34a;color:white}
-.danger{background:#dc2626;color:white}
-.neutral{background:#334155;color:white}
-#panel{position:fixed;top:0;right:-45%;width:45%;height:100%;background:#020617;
-box-shadow:-6px 0 20px rgba(0,0,0,.6);transition:.35s;padding:16px;overflow:auto}
-#panel.open{right:0}
-pre{white-space:pre-wrap;font-size:12px}
-.ok{color:#22c55e} .err{color:#ef4444}
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Workpent HyperDev Doctor</title>
+  <style>
+    :root{
+      --bg:#0f172a;
+      --panel:#020617;
+      --card:#0b1220;
+      --border:#1f2937;
+      --muted:#94a3b8;
+      --text:#e5e7eb;
+      --blue:#2563eb;
+      --green:#16a34a;
+      --red:#dc2626;
+      --slate:#334155;
+      --ok:#22c55e;
+      --err:#ef4444;
+    }
+    body{font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:var(--bg); color:var(--text); margin:0}
+    a{color:#93c5fd}
+    header{display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 14px 10px 14px}
+    header h1{margin:0; font-size:22px; letter-spacing:.2px}
+    header .sub{color:var(--muted); font-size:12px}
+    .wrap{padding:0 14px 14px 14px; max-width:1100px}
+    .row{display:flex; gap:12px; flex-wrap:wrap; align-items:center}
+    .card{background:rgba(2,6,23,.35); border:1px solid var(--border); border-radius:14px; padding:12px}
+    .card h2{margin:0 0 10px 0; font-size:16px}
+    .actions{display:flex; flex-wrap:wrap; gap:10px}
+    button{cursor:pointer; border:1px solid rgba(255,255,255,.08); border-radius:10px; padding:10px 12px; font-weight:700}
+    button:disabled{opacity:.5; cursor:not-allowed}
+    .primary{background:var(--blue); color:white}
+    .success{background:var(--green); color:white}
+    .danger{background:var(--red); color:white}
+    .neutral{background:var(--slate); color:white}
+    .ghost{background:transparent; color:var(--text)}
+    .pill{display:inline-flex; gap:8px; align-items:center; padding:6px 10px; border-radius:999px; border:1px solid rgba(255,255,255,.10); background:rgba(2,6,23,.35); color:var(--muted); font-size:12px}
+    .pill input{transform:scale(1.1)}
+    .split{display:grid; grid-template-columns: 1fr; gap:12px}
+    @media(min-width: 980px){
+      .split{grid-template-columns: 1fr 1fr}
+    }
+
+    /* History list */
+    #hlist{border:1px solid var(--border); border-radius:14px; overflow:hidden}
+    .hrow{display:flex; gap:12px; justify-content:space-between; align-items:flex-start; padding:10px 12px; border-top:1px solid rgba(255,255,255,.06)}
+    .hrow:first-child{border-top:0}
+    .hrow:hover{background:rgba(148,163,184,.06)}
+    .hleft .title{font-weight:800; font-size:13px}
+    .hleft .meta{opacity:.75; font-size:12px; margin-top:2px; color:var(--muted)}
+    .hright{display:flex; align-items:center; gap:8px}
+    .hbadge{font-size:12px; padding:2px 10px; border-radius:999px; border:1px solid rgba(255,255,255,.12); color:var(--muted)}
+    .hbadge.ok{color:var(--ok); border-color:#14532d}
+    .hbadge.err{color:var(--err); border-color:#7f1d1d}
+
+    /* Side panel */
+    #panel{position:fixed; top:0; right:-46%; width:46%; height:100%; background:var(--panel);
+      box-shadow:-10px 0 30px rgba(0,0,0,.65); transition:.25s; padding:14px; overflow:auto; z-index:9999}
+    #panel.open{right:0}
+    #panelTop{display:flex; justify-content:space-between; align-items:center; gap:10px}
+    #ptitle{margin:10px 0 0 0}
+    pre{white-space:pre-wrap; font-size:12px; line-height:1.45; margin:10px 0 0 0; color:#e2e8f0}
+    code{color:#e2e8f0}
+  </style>
 </head>
 <body>
-<h2 style="padding:12px">WPOTP Doctor</h2>
-<div class="actions" id="actions"></div>
+  <header>
+    <div>
+      <h1>Workpent HyperDev Doctor</h1>
+      <div class="sub">Universal ops panel (actions + event stream) — runs behind the /app gate</div>
+    </div>
+    <div class="row">
+      <label class="pill" title="Auto-refresh the event list every 2s">
+        <input id="auto" type="checkbox" checked />
+        auto-refresh
+      </label>
+      <button class="neutral" id="refreshBtn">Refresh</button>
+    </div>
+  </header>
 
-  <div id="history">
-   <div class="hhead">
-    <h3 style="margin:0">Recent Events</h3>
-    <button class="neutral" style="padding:6px 10px;border-radius:8px;font-weight:600" onclick="loadHistory()">Refresh</button>
-   </div>
-   <div id="hlist"></div>
+  <div class="wrap split">
+    <section class="card">
+      <h2>Actions</h2>
+      <div class="actions" id="actions"></div>
+      <div style="margin-top:10px; color:var(--muted); font-size:12px">
+        Tip: click an event row to open details. Actions run via <code>api/action/&lt;id&gt;</code>.
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Recent Events</h2>
+      <div id="hlist"></div>
+    </section>
   </div>
 
-<div id="panel">
-<button onclick="closeP()">✕ Close</button>
-<h3 id="ptitle"></h3>
-<pre id="pout"></pre>
-</div>
+  <div id="panel">
+    <div id="panelTop">
+      <button class="ghost" onclick="closeP()">✕ Close</button>
+      <span class="pill" id="pstatus">idle</span>
+    </div>
+    <h3 id="ptitle"></h3>
+    <pre id="pout"></pre>
+  </div>
 
 <script>
-const panel=d=>document.getElementById(d)
-function openP(t){panel("panel").classList.add("open");panel("ptitle").innerText=t}
-function closeP(){panel("panel").classList.remove("open")}
+  const el = (id) => document.getElementById(id);
 
-async function loadActions(){
- let a=await fetch("api/actions").then(r=>r.json())
- let c=panel("actions")
- for(let k in a){
-  let b=document.createElement("button")
-  b.textContent=a[k].label
-  b.className=a[k].kind
-  b.onclick=()=>run(k)
-  c.appendChild(b)
- }
-}
-
-let currentAid = null
-
-async function run(id){
- currentAid = id
- openP("Running "+id+" …")
- panel("pout").textContent = ""
- await fetch("api/action/"+id,{method:"POST"})
- await waitForDone(id, 8000)
-}
-
-async function waitForDone(id, timeoutMs){
- const t0 = Date.now()
- while(Date.now() - t0 < timeoutMs){
-  let ev=(await fetch("api/events").then(r=>r.json())).events
-  for(let idx=ev.length-1; idx>=0; idx--){
-   let e = ev[idx]
-   if(e && e.action=="ui_action_done" && e.action_id==id){
-    renderDone(e)
-    return
-   }
+  function openP(title){
+    el("panel").classList.add("open");
+    el("ptitle").innerText = title || "";
+  }
+  function closeP(){
+    el("panel").classList.remove("open");
   }
 
-  function esc(s){ return (s||"").toString() }
+  function fmtTs(ts){
+    if(!ts) return "";
+    // ts from backend is int(epoch seconds)
+    try{
+      const d = new Date(ts * 1000);
+      return d.toISOString().replace("T"," ").replace("Z","");
+    }catch(_){
+      return String(ts);
+    }
+  }
+
+  function safeString(x){
+    if(x === null || x === undefined) return "";
+    return (typeof x === "string") ? x : JSON.stringify(x);
+  }
+
+  let ACTIONS = [];
+  let currentAid = null;
+
+  async function loadActions(){
+    const res = await fetch("api/actions");
+    const data = await res.json();
+
+    // Backend shape: {actions: [...]}
+    ACTIONS = (data && data.actions) ? data.actions : [];
+
+    const c = el("actions");
+    c.innerHTML = "";
+
+    if(!ACTIONS.length){
+      const b = document.createElement("div");
+      b.style.color = "var(--muted)";
+      b.textContent = "No actions available.";
+      c.appendChild(b);
+      return;
+    }
+
+    for(const a of ACTIONS){
+      const b = document.createElement("button");
+      b.textContent = a.label || a.id || "action";
+      b.className = (a.kind || "primary");
+      b.onclick = () => run(a.id);
+      c.appendChild(b);
+    }
+  }
+
+  function renderDoneEvent(e){
+    el("pstatus").innerText = (e && e.rc === 0) ? "ok" : "done";
+    let out = "";
+    if(e && e.stdout) out += e.stdout;
+    if(e && e.result) out += (out ? "\n\n" : "") + JSON.stringify(e.result, null, 2);
+    if(e && e.stderr) out += (out ? "\n\n" : "") + e.stderr;
+    el("pout").textContent = out || "";
+  }
 
   function openEvent(e){
-   // Open panel and render the selected event deterministically
-   openP(e.action_id + (e.rc !== undefined ? (" (rc="+e.rc+")") : ""))
-   if(e.action=="ui_action_done") renderDone(e)
-   else panel("pout").textContent = JSON.stringify(e, null, 2)
+    const title = (e.event || e.action || "?") + " — " + (e.meta && e.meta.action_id ? e.meta.action_id : "");
+    openP(title.trim());
+    el("pstatus").innerText = "event";
+    el("pout").textContent = JSON.stringify(e, null, 2);
+  }
+
+  function rowBadgeFor(e){
+    // Our current Doctor backend emits:
+    //  - event: "action_start" with meta {action_id, trace_id}
+    //  - event: "action_done" with meta {action_id, trace_id, counts}
+    if(!e || !e.event) return ["hbadge", "event"];
+    if(e.event === "action_done") return ["hbadge ok", "done"];
+    if(e.event === "action_start") return ["hbadge", "start"];
+    if(e.event === "action_unknown") return ["hbadge err", "unknown"];
+    return ["hbadge", e.event];
   }
 
   function renderHistoryRow(e){
-   let row = document.createElement("div")
-   row.className = "hrow"
-   let left = document.createElement("div")
-   let right = document.createElement("div")
-   right.className = "hmeta"
+    const row = document.createElement("div");
+    row.className = "hrow";
 
-   let ts = (e.ts||"").replace("T"," ").replace("Z","")
-   let title = document.createElement("div")
-   title.textContent = (e.action_id||"?") + " — " + (e.action||"?")
-   let meta = document.createElement("div")
-   meta.className = "hmeta"
-   meta.textContent = ts
+    const left = document.createElement("div");
+    left.className = "hleft";
 
-   left.appendChild(title)
-   left.appendChild(meta)
+    const right = document.createElement("div");
+    right.className = "hright";
 
-   if(e.action=="ui_action_done"){
-    let b = document.createElement("span")
-    b.className = "hbadge " + (e.rc==0 ? "ok" : "err")
-    b.textContent = "rc=" + e.rc
-    right.appendChild(b)
-   } else {
-    let b = document.createElement("span")
-    b.className = "hbadge"
-    b.textContent = "start"
-    right.appendChild(b)
-   }
+    const meta = e.meta || {};
+    const actionId = meta.action_id || meta.action || "";
+    const title = document.createElement("div");
+    title.className = "title";
+    title.textContent = (actionId ? actionId + " — " : "") + (e.event || "?");
 
-   row.appendChild(left)
-   row.appendChild(right)
-   row.onclick = ()=>openEvent(e)
-   return row
+    const ts = document.createElement("div");
+    ts.className = "meta";
+    ts.textContent = fmtTs(e.ts);
+
+    left.appendChild(title);
+    left.appendChild(ts);
+
+    const [cls, txt] = rowBadgeFor(e);
+    const badge = document.createElement("span");
+    badge.className = cls;
+    badge.textContent = txt;
+
+    right.appendChild(badge);
+
+    row.appendChild(left);
+    row.appendChild(right);
+
+    row.onclick = () => openEvent(e);
+    return row;
   }
 
   async function loadHistory(){
-   let box = panel("hlist")
-   if(!box) return
-   let ev = (await fetch("api/events?limit=80").then(r=>r.json())).events || []
-   // show newest first
-   ev = ev.slice().reverse()
+    const res = await fetch("api/events?limit=120");
+    const data = await res.json();
+    let ev = (data && data.events) ? data.events : [];
 
-   box.innerHTML = ""
-   // only show ui_action_start/done for sanity
-   let filtered = ev.filter(e=>e && (e.action=="ui_action_start" || e.action=="ui_action_done"))
-   filtered.slice(0, 30).forEach(e=>box.appendChild(renderHistoryRow(e)))
+    // show newest first
+    ev = ev.slice().reverse();
+
+    const box = el("hlist");
+    box.innerHTML = "";
+    if(!ev.length){
+      const empty = document.createElement("div");
+      empty.style.padding = "10px 12px";
+      empty.style.color = "var(--muted)";
+      empty.textContent = "No events yet.";
+      box.appendChild(empty);
+      return;
+    }
+
+    ev.slice(0, 40).forEach(e => box.appendChild(renderHistoryRow(e)));
   }
-  await new Promise(r=>setTimeout(r,250))
- }
- panel("ptitle").innerText = id + " (waiting for completion...)"
-}
 
-function renderDone(last){
- panel("ptitle").innerText = last.action_id + " (rc=" + last.rc + ")"
+  async function run(id){
+    if(!id) return;
+    currentAid = id;
 
- // Safe text rendering (no innerHTML)
- let out = ""
- if(last.stdout) out += last.stdout
- if(last.result) out += (out ? "\n" : "") + JSON.stringify(last.result, null, 2)
+    openP("Running " + id + " …");
+    el("pstatus").innerText = "running";
+    el("pout").textContent = "";
 
- panel("pout").textContent = out || ""
+    // fire and forget + then wait a bit for events to appear
+    const r = await fetch("api/action/" + encodeURIComponent(id), { method: "POST" });
 
- if(last.stderr){
-  panel("pout").textContent += (panel("pout").textContent ? "\n\n" : "") + last.stderr
- }
-}
+    // Show response if backend returns structured error
+    if(!r.ok){
+      const t = await r.text();
+      el("pstatus").innerText = "error";
+      el("pout").textContent = t;
+      return;
+    }
 
-loadActions()
-  loadHistory()
-  setInterval(loadHistory,2000)
+    // poll events until we see action_done for this action_id (within 8s)
+    const timeoutMs = 8000;
+    const t0 = Date.now();
+    while(Date.now() - t0 < timeoutMs){
+      const data = await fetch("api/events?limit=200").then(x => x.json());
+      const ev = (data && data.events) ? data.events : [];
+      // find newest matching done
+      for(let i = ev.length - 1; i >= 0; i--){
+        const e = ev[i];
+        if(e && e.event === "action_done" && e.meta && e.meta.action_id === id){
+          el("pstatus").innerText = "done";
+          el("pout").textContent = JSON.stringify(e, null, 2);
+          await loadHistory();
+          return;
+        }
+      }
+      await new Promise(res => setTimeout(res, 250));
+    }
+
+    el("pstatus").innerText = "waiting";
+    el("ptitle").innerText = "Running " + id + " (waiting for completion...)";
+    await loadHistory();
+  }
+
+  // Refresh controls
+  el("refreshBtn").onclick = async () => {
+    await loadActions();
+    await loadHistory();
+  };
+
+  // Boot
+  loadActions();
+  loadHistory();
+  setInterval(() => {
+    if(el("auto").checked) loadHistory();
+  }, 2000);
 </script>
 </body>
 </html>
+
