@@ -1,0 +1,199 @@
+spec_version: "0.1"
+app_type: "whatsapp_bot_generator"
+
+app:
+  name: "acme-wa-botgen"
+  description: "Generates and runs WhatsApp AI support bots for small businesses"
+  owner: "workpent"
+  timezone: "Africa/Lagos"
+  locale: "en"
+
+ui_integration:
+  mode: "external_client"
+  description: >
+    HyperDef does not ship a UI. One or more external UIs act as
+    first-class clients that drive HyperDef via its HTTP API.
+  capabilities:
+    submit_spec: true
+    validate: true
+    breed: true
+    read_runtime: true
+    read_determinism: true
+    read_doctor_events: true
+    execute_actions: false
+  transport:
+    protocol: "http"
+    auth:
+      type: "api_key"
+      header: "x-api-key"
+  api_mapping:
+    validate:
+      method: "POST"
+      endpoint: "/api/hyperdef/validate"
+    breed:
+      method: "POST"
+      endpoint: "/api/hyperdef/breed"
+    doctor_advise:
+      method: "POST"
+      endpoint: "/api/hyperdef/doctor/advise"
+  guarantees:
+    synchronous_validation: true
+    idempotent_breed_with_lock: true
+    read_only_doctor_stream: true
+
+channels:
+  whatsapp:
+    provider: "meta_cloud_api"
+    webhook:
+      public_base_url: "https://bots.workpent.com"
+      path: "/webhooks/whatsapp"
+      verify_token_ref: "secrets:WHATSAPP_VERIFY_TOKEN"
+    meta:
+      phone_number_id_ref: "secrets:WA_PHONE_NUMBER_ID"
+      waba_id_ref: "secrets:WA_WABA_ID"
+      access_token_ref: "secrets:WA_ACCESS_TOKEN"
+    legal:
+      mode: "cloud_api_webhook"
+      terms_ack: true
+
+persona:
+  role: "customer_support"
+  tone: "polite_professional"
+  constraints:
+    - "Always ask clarifying questions when order ID is missing."
+    - "Never claim refunds are issued; instead guide the user to the refunds policy."
+  refusal_rules:
+    - id: "illegal_activity"
+      description: "Refuse help with illegal wrongdoing and suggest safe alternatives."
+      response_style: "brief_refusal_with_helpful_alt"
+    - id: "sensitive_personal_data"
+      description: "Do not request bank PINs, OTPs, or passwords."
+      response_style: "brief_refusal_with_helpful_alt"
+  escalation:
+    fallback_message: "I’m not fully sure—please share an order ID or I can connect you to a human."
+    human_handoff:
+      enabled: false
+      method: "tag_and_notify"
+
+knowledge:
+  sources:
+    - type: "manual"
+      name: "ACME Policies"
+      manual:
+        entries:
+          - title: "Refund Policy"
+            body: "Refunds are available within 7 days for unopened items. Ask for order ID."
+          - title: "Shipping"
+            body: "Standard shipping is 2–5 business days in Nigeria."
+  retrieval:
+    enabled: true
+    top_k: 4
+    chunk_chars: 900
+    overlap_chars: 120
+
+memory:
+  mode: "short_term"
+  short_term:
+    window_messages: 12
+    ttl_minutes: 120
+
+ai:
+  routing_policy: "primary_then_fallback"
+  primary:
+    provider: "ollama"
+    ollama:
+      base_url: "http://100.87.137.47:11434"
+      model: "llama3.1"
+      timeout_s: 45
+  fallback:
+    - provider: "groq"
+      model: "llama-3.1-8b-instant"
+      api_key_ref: "secrets:GROQ_API_KEY"
+      timeout_s: 45
+    - provider: "cerebras"
+      model: "llama-3.3-70b"
+      api_key_ref: "secrets:CEREBRAS_API_KEY"
+      timeout_s: 45
+  prompts:
+    system_preamble: "You are the ACME support assistant operating via WhatsApp."
+    persona_template: "v0.1_default"
+    refusal_template: "v0.1_default"
+  generation:
+    temperature: 0.2
+    top_p: 0.9
+    max_tokens: 600
+    seed: 42
+
+policies:
+  safe_mode: true
+  allowed_actions:
+    - "reply_message"
+    - "lookup_kb"
+    - "write_memory"
+    - "read_memory"
+  disallowed_actions:
+    - "shell_exec"
+    - "sudo"
+    - "network_scan"
+    - "file_delete"
+    - "nginx_reload"
+    - "systemctl"
+  rate_limits:
+    per_user_per_minute: 12
+    per_user_per_day: 400
+    global_per_minute: 120
+  autonomy:
+    enabled: true
+    allowlist_actions:
+      - "reply_message"
+      - "lookup_kb"
+      - "write_memory"
+    require_human_for:
+      - "billing_change"
+      - "data_export"
+      - "admin_ops"
+
+billing:
+  mode: "trial"
+  trial:
+    window_days: 14
+  free_tier:
+    monthly_messages: 1000
+    max_personas: 1
+  paid_tiers:
+    - name: "starter"
+      monthly_price: 25
+      monthly_messages: 10000
+      features: ["custom_kb", "fallback_providers"]
+    - name: "growth"
+      monthly_price: 99
+      monthly_messages: 60000
+      features: ["priority_routing", "advanced_rate_limits"]
+
+observability:
+  trace_ids: true
+  logs:
+    level: "info"
+    json: true
+    path: "./logs/app.jsonl"
+  metrics:
+    enabled: true
+    path: "/metrics"
+  doctor:
+    enabled: true
+    auto_advice: true
+    auto_actions: true
+    event_buffer: 300
+
+deployment_target:
+  target: "vps"
+  runtime:
+    python_version: "3.11"
+    web_server: "uvicorn"
+  services:
+    install_mode: "systemd"
+  secrets:
+    handling: "env_file"
+    env_file_path: "./.env"
+    never_write_values: true
+
