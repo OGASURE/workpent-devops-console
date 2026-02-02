@@ -21,3 +21,6 @@ backend/.state/
 *.save
 *~
 *.bak_*
+
+# Never commit local venv
+backend/.venv/
