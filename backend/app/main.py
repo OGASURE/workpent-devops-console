@@ -469,8 +469,15 @@ async def api_server_stats():
 # -------------------------------------------------------------------
 
 _DOCTOR_EVENTS: List[Dict[str, Any]] = []
+
+# Actions exposed to the Doctor UI.
+# "kind" maps to button class names in doctor.html (primary/success/danger/neutral).
 _DOCTOR_ACTIONS: List[Dict[str, Any]] = [
-    {"id": "reconcile_run", "label": "Run reconcile now"},
+    {"id": "reconcile_run", "label": "Run reconcile now", "kind": "primary"},
+    {"id": "reconcile_report", "label": "Reconcile: view report", "kind": "neutral"},
+    {"id": "nginx_test", "label": "Nginx: test config", "kind": "neutral"},
+    {"id": "nginx_reload", "label": "Nginx: reload", "kind": "success"},
+    {"id": "systemd_sweep_orphans", "label": "Systemd: sweep orphans", "kind": "danger"},
 ]
 
 def _doctor_log(event: str, meta: Dict[str, Any] | None = None) -> None:
@@ -484,34 +491,108 @@ def _doctor_log(event: str, meta: Dict[str, Any] | None = None) -> None:
     if len(_DOCTOR_EVENTS) > 300:
         del _DOCTOR_EVENTS[:-300]
 
+def _err_str(e: Exception) -> str:
+    # Render FastAPI HTTPException nicely (detail contains the real message)
+    if isinstance(e, HTTPException):
+        try:
+            return str(e.detail)
+        except Exception:
+            return "HTTPException"
+    return str(e)
 
 @app.get("/api/actions", response_class=JSONResponse)
 async def api_actions():
     return {"actions": _DOCTOR_ACTIONS}
 
-
 @app.post("/api/action/{action_id}", response_class=JSONResponse)
 async def api_action_run(action_id: str):
-    # Minimal v1: only reconcile_run is supported
-    if action_id != "reconcile_run":
-        _doctor_log("action_unknown", {"action_id": action_id})
-        return JSONResponse({"detail": "unknown action"}, status_code=404)
+    """
+    Doctor action runner.
 
+    Strategy:
+    - Log action_start/action_done/action_error into _DOCTOR_EVENTS (Doctor UI reads /api/events).
+    - Bridge into existing console handlers (no self-HTTP calls, no duplicated logic).
+    """
     trace_id = uuid.uuid4().hex
     _doctor_log("action_start", {"action_id": action_id, "trace_id": trace_id})
 
-    rep = reconcile.build_report()
-    rep["trace_id"] = trace_id
-    reconcile.apply_observed(rep)
+    try:
+        # -----------------------------
+        # reconcile
+        # -----------------------------
+        if action_id == "reconcile_run":
+            rep = reconcile.build_report()
+            rep["trace_id"] = trace_id
+            reconcile.apply_observed(rep)
 
-    _doctor_log("action_done", {
-        "action_id": action_id,
-        "trace_id": trace_id,
-        "counts": rep.get("counts") or {},
-    })
+            _doctor_log("action_done", {
+                "action_id": action_id,
+                "trace_id": trace_id,
+                "counts": rep.get("counts") or {},
+            })
+            return {"ok": True, "action_id": action_id, "trace_id": trace_id, "result": rep}
 
-    return {"ok": True, "action_id": action_id, "trace_id": trace_id, "result": rep}
+        if action_id == "reconcile_report":
+            rep = await api_reconcile_report()
+            # api_reconcile_report returns a dict; add trace_id for UI correlation
+            if isinstance(rep, dict):
+                rep["trace_id"] = trace_id
 
+            _doctor_log("action_done", {
+                "action_id": action_id,
+                "trace_id": trace_id,
+                "counts": (rep.get("counts") if isinstance(rep, dict) else {}) or {},
+            })
+            return {"ok": True, "action_id": action_id, "trace_id": trace_id, "result": rep}
+
+        # -----------------------------
+        # nginx
+        # -----------------------------
+        if action_id == "nginx_test":
+            # IMPORTANT: api_nginx_test() must run nginx -t with sudo (see console handler)
+            result = await api_nginx_test()
+            _doctor_log("action_done", {
+                "action_id": action_id,
+                "trace_id": trace_id,
+                "ok": bool((result or {}).get("ok")),
+            })
+            return {"ok": True, "action_id": action_id, "trace_id": trace_id, "result": result}
+        
+        if action_id == "nginx_reload":
+            result = await api_nginx_reload()
+            _doctor_log("action_done", {
+                "action_id": action_id,
+                "trace_id": trace_id,
+                "ok": bool((result or {}).get("ok", True)),
+            })
+            return {"ok": True, "action_id": action_id, "trace_id": trace_id, "result": result}
+        
+        # -----------------------------
+        # systemd
+        # -----------------------------
+        if action_id == "systemd_sweep_orphans":
+            result = await api_systemd_sweep_orphans()
+            _doctor_log("action_done", {
+                "action_id": action_id,
+                "trace_id": trace_id,
+                "removed": len((result or {}).get("removed") or []),
+                "kept": len((result or {}).get("kept") or []),
+                "daemon_reload": bool((result or {}).get("daemon_reload")),
+            })
+            return {"ok": True, "action_id": action_id, "trace_id": trace_id, "result": result}
+
+        # -----------------------------
+        # unknown
+        # -----------------------------
+        _doctor_log("action_unknown", {"action_id": action_id, "trace_id": trace_id})
+        return JSONResponse({"detail": "unknown action", "action_id": action_id, "trace_id": trace_id}, status_code=404)
+
+    except Exception as e:
+        _doctor_log("action_error", {"action_id": action_id, "trace_id": trace_id, "error": _err_str(e)})
+        return JSONResponse(
+            {"detail": "action failed", "action_id": action_id, "trace_id": trace_id, "error": _err_str(e)},
+            status_code=500,
+        )
 
 @app.get("/api/events", response_class=JSONResponse)
 async def api_events(limit: int = 80):
@@ -865,6 +946,11 @@ async def api_app_restart(app_name: str):
 
 @app.get("/api/console/apps/{app_name}/health", response_class=JSONResponse)
 async def api_app_health(app_name: str):
+    """
+    Lightweight health probe for a managed app:
+    - Reads APP_PORT from the app's .env
+    - GET http://127.0.0.1:<port>/health
+    """
     base = app_dir(app_name)
     port = read_env_port(base)
     if not port:
@@ -876,20 +962,38 @@ async def api_app_health(app_name: str):
     try:
         conn.request("GET", "/health")
         resp = conn.getresponse()
-        body = resp.read(1024).decode("utf-8", errors="ignore")
-        return {"ok": resp.status == 200, "status_code": resp.status, "reason": resp.reason, "body": body}
+        body = resp.read(2048).decode("utf-8", errors="ignore")
+        ok = resp.status == 200
+        return {
+            "ok": ok,
+            "status_code": resp.status,
+            "reason": resp.reason,
+            "body": body,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Health check error: {e}")
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 @app.get("/api/console/apps/{app_name}/logs", response_class=PlainTextResponse)
 async def api_app_logs(app_name: str, lines: int = 80):
-    app_dir(app_name)
+    """
+    Tail systemd logs for an app unit. Uses sudo because journal access often requires it.
+    """
+    app_dir(app_name)  # validates app exists
     unit = systemd_unit_for_app(app_name)
 
-    # journalctl often needs root depending on distro configuration
+    # clamp to prevent abuse
+    try:
+        lines = int(lines or 80)
+    except Exception:
+        lines = 80
+    lines = max(1, min(lines, 500))
+
     res = subprocess.run(
         ["sudo", "-n", "/bin/journalctl", "-u", unit, "-n", str(lines), "--no-pager"],
         capture_output=True,
@@ -903,7 +1007,16 @@ async def api_app_logs(app_name: str, lines: int = 80):
 
 @app.post("/api/console/nginx/test", response_class=JSONResponse)
 async def api_nginx_test():
-    res = subprocess.run(["nginx", "-t"], capture_output=True, text=True, timeout=10)
+    """
+    Validate nginx config. Must run with elevated privileges because configs/certs/logs are root-owned.
+    Uses non-interactive sudo (-n). If sudo is not permitted, this returns ok=false with output.
+    """
+    res = subprocess.run(
+        ["sudo", "-n", "nginx", "-t"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
     ok = res.returncode == 0
     output = (res.stderr or res.stdout).strip()
     return {"ok": ok, "output": output}
@@ -911,6 +1024,9 @@ async def api_nginx_test():
 
 @app.post("/api/console/nginx/reload", response_class=JSONResponse)
 async def api_nginx_reload():
+    """
+    Reload nginx via systemd (non-interactive sudo).
+    """
     res = subprocess.run(
         ["sudo", "-n", "/bin/systemctl", "reload", "nginx"],
         capture_output=True,
