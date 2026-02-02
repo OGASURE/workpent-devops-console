@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from app.git_routes import router as git_router
 from app.hyperdev_routes import router as hyperdev_router
+from app.hyperdef_http import router as hyperdef_router
 from app.jobs import job_store, spawn_job
 
 # DB bootstrap + auth
@@ -53,6 +54,7 @@ app = FastAPI(title="Workpent HyperDev Console")
 # Routers (keep)
 app.include_router(hyperdev_router)
 app.include_router(git_router)
+app.include_router(hyperdef_router)
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -70,6 +72,7 @@ def _startup() -> None:
 
 PROTECTED_PREFIXES = (
     "/api/console",
+    "/api/hyperdef",
     "/hyperdev",
     "/git",
     "/git-war-room",
